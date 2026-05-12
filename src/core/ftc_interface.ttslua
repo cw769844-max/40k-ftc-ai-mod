@@ -20,53 +20,61 @@ local GUIDS = {
     startMenu       = "startMenu_GUID",
 }
 
+-- Resolved object cache to avoid repeated GUID lookups per frame
+local _cache = {}
+
 local function getObj(guidKey)
-    local guid = GUIDS[guidKey]
+    if _cache[guidKey] then return _cache[guidKey] end
+    local varName = GUIDS[guidKey]
+    if not varName then return nil end
+    -- FTC stores GUIDs as global variable names; resolve them at runtime
+    local guid = Global.getVar(varName)
     if not guid then return nil end
     local obj = getObjectFromGUID(guid)
-    if not obj then
-        -- GUIDs in FTC are stored as variable names, not literal values.
-        -- At runtime, resolve them from Global scope.
-        local resolvedGuid = Global.getVar(guid)
-        if resolvedGuid then
-            obj = getObjectFromGUID(resolvedGuid)
-        end
-    end
+    _cache[guidKey] = obj
     return obj
 end
 
+-- Flush cache when FTC reloads
+function FTCInterface.flushCache()
+    _cache = {}
+end
+
+-- ── Phase / Round ──────────────────────────────────────────────────────────
+
 function FTCInterface.getGamePhase()
     local menu = getObj("startMenu")
-    if not menu then return nil end
-    return menu.getVar("currentPhase")
+    if not menu then return "unknown" end
+    return (menu.getVar("currentPhase") or "unknown"):lower()
 end
 
 function FTCInterface.getGameRound()
-    local counter = getObj("gameTurnCounter")
-    if not counter then return 1 end
-    return counter.Counter.getValue()
+    local obj = getObj("gameTurnCounter")
+    if not obj then return 1 end
+    return obj.Counter.getValue()
 end
+
+-- ── Victory Points ─────────────────────────────────────────────────────────
 
 function FTCInterface.getVP(side)
     local key = (side == "red") and "redVPCounter" or "blueVPCounter"
     local obj = getObj(key)
-    if not obj then return 0 end
-    return obj.Counter.getValue()
+    return obj and obj.Counter.getValue() or 0
 end
 
 function FTCInterface.addVP(side, amount)
     local key = (side == "red") and "redVPCounter" or "blueVPCounter"
     local obj = getObj(key)
     if not obj then return end
-    local current = obj.Counter.getValue()
-    obj.Counter.setValue(current + (amount or 1))
+    obj.Counter.setValue(obj.Counter.getValue() + (amount or 1))
 end
+
+-- ── Command Points ──────────────────────────────────────────────────────────
 
 function FTCInterface.getCP(side)
     local key = (side == "red") and "redCPCounter" or "blueCPCounter"
     local obj = getObj(key)
-    if not obj then return 0 end
-    return obj.Counter.getValue()
+    return obj and obj.Counter.getValue() or 0
 end
 
 function FTCInterface.spendCP(side, amount)
@@ -83,62 +91,49 @@ function FTCInterface.gainCP(side, amount)
     local key = (side == "red") and "redCPCounter" or "blueCPCounter"
     local obj = getObj(key)
     if not obj then return end
-    local current = obj.Counter.getValue()
-    obj.Counter.setValue(current + (amount or 1))
+    obj.Counter.setValue(obj.Counter.getValue() + (amount or 1))
 end
 
--- Marks a unit's FTC activation token as activated (red = acted).
+-- ── Activation Tokens ──────────────────────────────────────────────────────
+
+-- FTC uses "setAlredyActed" (note the typo in FTC source — preserved here for compatibility)
 function FTCInterface.setUnitActivated(unitObj)
     if not unitObj then return end
-    local success = pcall(function() unitObj.call("setAlredyActed") end)
-    if not success then
-        -- Fallback: set the variable directly if the function name differs
-        unitObj.setVar("alreadyActed", true)
-    end
+    pcall(function() unitObj.call("setAlredyActed") end)
+    unitObj.setVar("alreadyActed", true)
 end
 
--- Resets a unit's activation token (green = ready).
 function FTCInterface.resetUnitActivation(unitObj)
     if not unitObj then return end
-    local success = pcall(function() unitObj.call("resetAlredyActed") end)
-    if not success then
-        unitObj.setVar("alreadyActed", false)
-    end
+    pcall(function() unitObj.call("resetAlredyActed") end)
+    unitObj.setVar("alreadyActed", false)
 end
 
 function FTCInterface.isUnitActivated(unitObj)
     if not unitObj then return true end
-    local val = unitObj.getVar("alreadyActed")
-    return val == true
+    return unitObj.getVar("alreadyActed") == true
 end
 
--- Adjusts wound counter on a unit object by delta (negative = damage).
-function FTCInterface.modifyUnitWounds(unitObj, delta)
-    if not unitObj then return end
-    local wounds = unitObj.getVar("wounds") or 0
-    unitObj.setVar("wounds", math.max(0, wounds + delta))
-    pcall(function() unitObj.call("writeMenu") end)
-end
+-- ── Wounds ─────────────────────────────────────────────────────────────────
 
 function FTCInterface.getUnitWounds(unitObj)
     if not unitObj then return 0 end
     return unitObj.getVar("wounds") or 0
 end
 
--- Returns the FTC dice roller object for the given side.
+function FTCInterface.modifyUnitWounds(unitObj, delta)
+    if not unitObj then return end
+    local current = unitObj.getVar("wounds") or 0
+    unitObj.setVar("wounds", math.max(0, current + delta))
+    pcall(function() unitObj.call("writeMenu") end)
+end
+
+-- ── Dice ────────────────────────────────────────────────────────────────────
+
 function FTCInterface.getDiceRoller(side)
-    local key = (side == "red") and "redDiceRoller" or "blueDiceRoller"
-    return getObj(key)
+    return getObj((side == "red") and "redDiceRoller" or "blueDiceRoller")
 end
 
 function FTCInterface.getDiceMat(side)
-    local key = (side == "red") and "redDiceMat" or "blueDiceMat"
-    return getObj(key)
-end
-
--- Returns the FTC-reported current phase name, normalised to lowercase.
-function FTCInterface.getCurrentPhaseName()
-    local phase = FTCInterface.getGamePhase()
-    if type(phase) == "string" then return phase:lower() end
-    return "unknown"
+    return getObj((side == "red") and "redDiceMat" or "blueDiceMat")
 end
