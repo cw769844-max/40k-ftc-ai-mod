@@ -56,9 +56,10 @@ function AIMain.buildUI()
         { label="AI → Red",    click_function="onBtnRedSide",   pos={-1.2, 0.2, -1.2}, color={0.8,0.1,0.1} },
         { label="AI → Blue",   click_function="onBtnBlueSide",  pos={ 1.2, 0.2, -1.2}, color={0.1,0.3,0.9} },
         -- Difficulty
-        { label="Easy",        click_function="onBtnEasy",      pos={-1.2, 0.2,  0.0}, color={0.2,0.7,0.2} },
+        { label="Easy",        click_function="onBtnEasy",       pos={-1.2, 0.2,  0.0}, color={0.2,0.7,0.2} },
         { label="Medium",      click_function="onBtnMedium",    pos={ 0.0, 0.2,  0.0}, color={0.7,0.7,0.1} },
         { label="Hard",        click_function="onBtnHard",      pos={ 1.2, 0.2,  0.0}, color={0.8,0.2,0.2} },
+        { label="Phys Dice",   click_function="onBtnPhysDice",  pos={-1.2, 0.2,  1.2}, color={0.5,0.3,0.7} },
         -- Start / debug
         { label="START AI",    click_function="onBtnStart",     pos={ 0.0, 0.2, -1.2}, color={0.1,0.7,0.3} },
         { label="Debug",       click_function="onBtnDebug",     pos={ 0.0, 0.2,  1.2}, color={0.4,0.4,0.4} },
@@ -92,6 +93,12 @@ function onBtnMedium()   Config.setDifficulty("medium") end
 function onBtnHard()     Config.setDifficulty("hard")   end
 function onBtnDebug()    Config.toggleDebug()            end
 
+function onBtnPhysDice()
+    local isOn = DiceHandler.isPhysical()
+    DiceHandler.setPhysical(not isOn, Config.getAISide())
+    Narrator.announce("Physical FTC dice: " .. (not isOn and "ON" or "OFF"))
+end
+
 function onBtnScan()
     -- Re-scan units without starting the AI loop (for diagnostic purposes).
     local side = Config.getAISide()
@@ -119,6 +126,8 @@ function onBtnStart()
     Narrator.announce(string.format(
         "40K FTC AI Controller starting — side: %s, difficulty: %s",
         side, Config.getDifficulty()))
+    -- Discover FTC objects not in the standard GUID table (score sheet, etc.)
+    FTCInterface.discoverExtras()
     local ok = ArmyManager.init(side)
     if not ok then
         Narrator.warn("Army detection failed. Ensure YellowScribe army is placed on the correct side.")

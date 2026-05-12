@@ -105,9 +105,10 @@ function ChargePhase.execute(aiSide, round)
         ::continue::
     end
 
-    -- Refresh engagement flags after all charges resolve
+    -- Refresh engagement flags after all charges resolve, then advance to Fight Phase.
     Wait.time(function()
         ArmyManager.refreshPositions()
         Narrator.announce("Charge Phase complete.")
+        Wait.time(function() FTCInterface.advancePhase(aiSide) end, 0.5)
     end, 1.5)
 end

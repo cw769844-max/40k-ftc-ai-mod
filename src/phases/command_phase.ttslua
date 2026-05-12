@@ -51,4 +51,6 @@ function CommandPhase.execute(aiSide, round)
     --  Rapid Ingress is used in opponent's movement phase, handled reactively.)
 
     Narrator.announce("Command Phase complete.")
+    -- Press FTC's phase-advance button so the game progresses to Movement Phase.
+    Wait.time(function() FTCInterface.advancePhase(aiSide) end, 0.5)
 end

@@ -74,7 +74,7 @@ local function onRoundChange(newRound)
 end
 
 local function poll()
-    local phase = FTCInterface.getCurrentPhaseName()
+    local phase = FTCInterface.getCurrentPhaseName()  -- alias for getGamePhase()
     local round = FTCInterface.getGameRound()
 
     if round ~= state.lastRound then

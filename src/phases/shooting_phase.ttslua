@@ -45,26 +45,33 @@ function ShootingPhase.execute(aiSide, round)
             end
         end
 
-        local damage, breakdown = DiceHandler.resolveAttack(effectiveWeapon, target.stats or {}, numMini)
+        -- Use DiceHandler.resolve: async when physical dice enabled, sync otherwise.
+        -- Capture loop vars for the callback closure.
+        local capturedUnit   = unit
+        local capturedTarget = target
+        local capturedWeapon = effectiveWeapon
+        local capturedSide   = aiSide
 
-        Narrator.action(unit.name,
-            string.format("shoots %s with %s", target.name, effectiveWeapon.name),
-            string.format("%d attacks → %d hits → %d wounds → %d unsaved → %d damage",
-                breakdown.attacks, breakdown.hits, breakdown.wounds, breakdown.unsaved, breakdown.damage))
+        DiceHandler.resolve(effectiveWeapon, target.stats or {}, numMini, function(damage, breakdown)
+            Narrator.action(capturedUnit.name,
+                string.format("shoots %s with %s", capturedTarget.name, capturedWeapon.name),
+                string.format("%d attacks → %d hits → %d wounds → %d unsaved → %d damage",
+                    breakdown.attacks, breakdown.hits, breakdown.wounds, breakdown.unsaved, breakdown.damage))
 
-        if damage > 0 then
-            UnitTracker.applyWounds(target, damage)
-        end
+            if damage > 0 then
+                UnitTracker.applyWounds(capturedTarget, damage)
+            end
 
-        -- Evaluate Go to Ground for targeted enemy (reactive, handled via stratagem)
-        StratagemManager.evaluateAutoUse("shooting", {
-            infantryUnderHeavyFire = damage >= 3,
-            infantryUnitAvailable  = true,
-        }, aiSide)
+            StratagemManager.evaluateAutoUse("shooting", {
+                infantryUnderHeavyFire = damage >= 3,
+                infantryUnitAvailable  = true,
+            }, capturedSide)
+        end)
 
         UnitTracker.markActivated(unit)
         ::continue::
     end
 
     Narrator.announce("Shooting Phase complete.")
+    Wait.time(function() FTCInterface.advancePhase(aiSide) end, 0.5)
 end

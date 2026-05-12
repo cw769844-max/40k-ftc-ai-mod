@@ -63,21 +63,21 @@ local function fightWithUnit(unit, enemyUnits, aiSide)
     end
 
     -- ── Resolve melee attacks ──────────────────────────────────────────
-    local numMini = 1   -- one model per record (simplified; extend for unit sizes)
-    local damage, breakdown = DiceHandler.resolveAttack(weapon, target.stats or {}, numMini)
+    local numMini        = 1
+    local capturedUnit   = unit
+    local capturedTarget = target
+    local capturedWeapon = weapon
 
-    Narrator.action(unit.name,
-        string.format("fights %s with %s", target.name, weapon.name),
-        string.format("%d attacks → %d hits → %d wounds → %d unsaved → %d damage",
-            breakdown.attacks, breakdown.hits, breakdown.wounds, breakdown.unsaved, breakdown.damage))
+    DiceHandler.resolve(weapon, target.stats or {}, numMini, function(damage, breakdown)
+        Narrator.action(capturedUnit.name,
+            string.format("fights %s with %s", capturedTarget.name, capturedWeapon.name),
+            string.format("%d attacks → %d hits → %d wounds → %d unsaved → %d damage",
+                breakdown.attacks, breakdown.hits, breakdown.wounds, breakdown.unsaved, breakdown.damage))
 
-    -- ── Apply damage ───────────────────────────────────────────────────
-    if damage > 0 then
-        -- Remove casualties from the back of the unit (models furthest from the AI attacker).
-        -- In TTS we represent this by applying wounds to the target record and letting
-        -- the FTC wound counter track remaining health.
-        UnitTracker.applyWounds(target, damage)
-    end
+        if damage > 0 then
+            UnitTracker.applyWounds(capturedTarget, damage)
+        end
+    end)
 
     -- ── Counter-Offensive stratagem window ────────────────────────────
     StratagemManager.evaluateAutoUse("fight", {
@@ -126,10 +126,11 @@ function FightPhase.execute(aiSide, round)
         UnitTracker.markActivated(unit)
     end
 
-    -- Final position refresh after all fights and consolidations resolve.
+    -- Final position refresh after all fights, then advance (ends the AI's full turn).
     Wait.time(function()
         ArmyManager.refreshPositions()
         BoardState.recalcEngagement(ArmyManager.getAIUnits(), ArmyManager.getEnemyUnits())
-        Narrator.announce("Fight Phase complete.")
+        Narrator.turnEnd(round)
+        Wait.time(function() FTCInterface.advancePhase(aiSide) end, 0.5)
     end, 2.0)
 end

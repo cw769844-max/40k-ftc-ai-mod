@@ -4,7 +4,7 @@
 
 FTCInterface = {}
 
--- GUIDs from FTC global.ttslua
+-- GUIDs from FTC global.ttslua — values are the Global variable names FTC uses to store them.
 local GUIDS = {
     redVPCounter    = "redVPCounter_GUID",
     blueVPCounter   = "blueVPCounter_GUID",
@@ -31,13 +31,39 @@ local function getObj(guidKey)
     local guid = Global.getVar(varName)
     if not guid then return nil end
     local obj = getObjectFromGUID(guid)
-    _cache[guidKey] = obj
+    if obj then _cache[guidKey] = obj end
     return obj
 end
 
 -- Flush cache when FTC reloads
 function FTCInterface.flushCache()
     _cache = {}
+end
+
+-- Scans all objects on the table to locate FTC objects not in the GUID table
+-- (score sheet, mission managers). Called once at startup.
+function FTCInterface.discoverExtras()
+    for _, obj in ipairs(getAllObjects()) do
+        if not obj.isValid() then goto continue end
+
+        -- Score sheet: identified by its scoreData variable
+        if not _cache["scoreSheet"] then
+            local ok, val = pcall(function() return obj.getVar("scoreData") end)
+            if ok and val ~= nil then
+                _cache["scoreSheet"] = obj
+            end
+        end
+
+        -- Start menu fallback: identified by currentPhase variable
+        if not _cache["startMenu"] then
+            local ok2, phase = pcall(function() return obj.getVar("currentPhase") end)
+            if ok2 and phase ~= nil then
+                _cache["startMenu"] = obj
+            end
+        end
+
+        ::continue::
+    end
 end
 
 -- ── Phase / Round ──────────────────────────────────────────────────────────
@@ -136,4 +162,108 @@ end
 
 function FTCInterface.getDiceMat(side)
     return getObj((side == "red") and "redDiceMat" or "blueDiceMat")
+end
+
+-- Alias used by game_state.ttslua
+function FTCInterface.getCurrentPhaseName()
+    return FTCInterface.getGamePhase()
+end
+
+-- ── Phase Advance / End Turn ────────────────────────────────────────────────
+
+-- Presses the FTC phase-advance button on behalf of the AI player.
+-- This is the same as the human clicking "End Phase" or "End Turn".
+function FTCInterface.advancePhase(side)
+    local menu = getObj("startMenu")
+    if not menu then return end
+    -- FTC's passTurn function accepts a player color string
+    local color = (side == "red") and "Red" or "Blue"
+    pcall(function() menu.call("passTurn", {color = color}) end)
+end
+
+-- ── Score Sheet ─────────────────────────────────────────────────────────────
+
+-- Clicks a +1 on the FTC 10e score sheet.
+-- round: 1-5, category: 1=Primary 2=Secondary1 3=Secondary2, detail: sub-column index
+function FTCInterface.scoreSheetPlus(round, category, detail)
+    local sheet = getObj("scoreSheet")
+    if not sheet then return end
+    local fn = string.format("plus_%d%d%d", round, category, detail)
+    pcall(function() sheet.call(fn, {}) end)
+end
+
+function FTCInterface.scoreSheetMinus(round, category, detail)
+    local sheet = getObj("scoreSheet")
+    if not sheet then return end
+    local fn = string.format("minus_%d%d%d", round, category, detail)
+    pcall(function() sheet.call(fn, {}) end)
+end
+
+-- ── Mission / Secondary Cards ────────────────────────────────────────────────
+
+-- AI selects its two secondary mission cards.
+-- Pass two TTS object references (the card objects in the AI's hand zone).
+-- Flips them face-down then calls FTC's lock-in function.
+function FTCInterface.lockInSecondaries(side, card1, card2)
+    if card1 then pcall(function() card1.flip() end) end
+    if card2 then pcall(function() card2.flip() end) end
+
+    Wait.frames(function()
+        -- FTC mission manager objects carry a 'missionSide' variable
+        for _, obj in ipairs(getAllObjects()) do
+            local ok, ms = pcall(function() return obj.getVar("missionSide") end)
+            if ok and ms then
+                local matchSide = (side == "red") and "Red" or "Blue"
+                if ms == matchSide or ms == side then
+                    pcall(function() obj.call("lockInSecondaries", {}) end)
+                    break
+                end
+            end
+        end
+    end, 3)
+end
+
+-- ── FTC Physical Dice Rolling ────────────────────────────────────────────────
+
+-- Rolls dice using the FTC physical dice roller for the given side.
+-- count: number of d6 to roll
+-- onComplete(results): callback receiving a table of integer results
+-- Falls back to math.random if the FTC roller is not available.
+function FTCInterface.rollPhysicalD6(side, count, onComplete)
+    local mat    = getObj((side == "red") and "redDiceMat" or "blueDiceMat")
+    local roller = getObj((side == "red") and "redDiceRoller" or "blueDiceRoller")
+
+    if not mat or not roller then
+        -- No FTC roller found — use virtual rolls
+        local results = {}
+        for i = 1, count do results[i] = math.random(1, 6) end
+        if onComplete then onComplete(results) end
+        return
+    end
+
+    -- Use quickRoll if available (returns results immediately without animation)
+    local quickOk = pcall(function()
+        mat.call("quickRoll", {n = count, player = side})
+    end)
+
+    if not quickOk then
+        -- Fall back to placing dice in the roller bag and triggering a roll
+        pcall(function() roller.call("RollOrSelectDice", {count = count}) end)
+    end
+
+    -- Wait for dice physics to settle, then read results from the mat's lastRolls table
+    Wait.time(function()
+        local results = {}
+        local ok, rolls = pcall(function() return mat.getVar("lastRolls") end)
+        if ok and rolls and type(rolls) == "table" then
+            for _, entry in ipairs(rolls) do
+                if entry.value then table.insert(results, entry.value) end
+            end
+        end
+        -- Pad with math.random if fewer results than expected
+        while #results < count do
+            table.insert(results, math.random(1, 6))
+        end
+        if onComplete then onComplete(results) end
+    end, 2.5)
 end
