@@ -1,0 +1,42 @@
+-- Narrator
+-- All AI-to-player communication goes through this module.
+-- Announcements are broadcast to all players so the human can follow what the AI is doing.
+
+Narrator = {}
+
+local AI_COLOR  = {r=0.3, g=0.6, b=1.0}   -- light blue text for AI messages
+local WARN_COLOR = {r=1.0, g=0.7, b=0.0}  -- amber for warnings
+
+-- Broadcasts a message visible to all players, prefixed with "[AI]".
+function Narrator.announce(msg)
+    broadcastToAll("[AI] " .. tostring(msg), AI_COLOR)
+end
+
+-- Announces a specific action the AI is taking (movement, shooting, etc.).
+function Narrator.action(unitName, action, detail)
+    local msg = string.format("%s: %s", unitName, action)
+    if detail and detail ~= "" then
+        msg = msg .. " — " .. detail
+    end
+    broadcastToAll("[AI] " .. msg, AI_COLOR)
+end
+
+-- Announces a dice roll request and its outcome.
+function Narrator.rollResult(context, dice, result)
+    broadcastToAll(string.format("[AI] %s | %s → %s", context, dice, tostring(result)), AI_COLOR)
+end
+
+-- Announces a warning (e.g. no legal targets, missing datasheet entry).
+function Narrator.warn(msg)
+    broadcastToAll("[AI WARNING] " .. tostring(msg), WARN_COLOR)
+end
+
+-- Announces phase start.
+function Narrator.phaseStart(phaseName, round)
+    broadcastToAll(string.format("[AI] ── Round %d: %s Phase ──", round, phaseName), AI_COLOR)
+end
+
+-- Announces end of AI turn.
+function Narrator.turnEnd(round)
+    broadcastToAll(string.format("[AI] Turn %d complete. Your move.", round), AI_COLOR)
+end

@@ -1,0 +1,166 @@
+-- Board State Tracker
+-- Maintains a live snapshot of all unit positions, objective locations,
+-- distances between units, and engagement range status.
+
+BoardState = {}
+
+-- Objective marker positions are read once at game start from objects tagged
+-- with 'objectiveMarker' in their GM notes or description.
+local objectives     = {}   -- list of {id, pos, controlledBy}
+local unitPositions  = {}   -- guid -> {pos, side, engaged}
+
+local ENGAGEMENT_RANGE_INCHES = 1.0  -- 1" engagement range in 40K 10e
+local TTS_UNITS_PER_INCH      = 2.54 -- TTS world units to inches conversion
+
+local function ttsToInches(ttsDistance)
+    return ttsDistance / TTS_UNITS_PER_INCH
+end
+
+local function distance3d(a, b)
+    local dx = a.x - b.x
+    local dy = a.y - b.y
+    local dz = a.z - b.z
+    return math.sqrt(dx*dx + dy*dy + dz*dz)
+end
+
+-- Horizontal distance only (ignores Y height) — used for range/movement checks.
+local function distanceXZ(a, b)
+    local dx = a.x - b.x
+    local dz = a.z - b.z
+    return math.sqrt(dx*dx + dz*dz)
+end
+
+function BoardState.distanceInches(posA, posB)
+    return ttsToInches(distanceXZ(posA, posB))
+end
+
+-- Rebuild objective list by scanning all objects for objective markers.
+function BoardState.scanObjectives()
+    objectives = {}
+    for _, obj in ipairs(getAllObjects()) do
+        local notes = obj.getGMNotes() or ""
+        local desc  = obj.getDescription() or ""
+        if notes:find("objectiveMarker") or desc:find("objectiveMarker") or
+           obj.getName():lower():find("objective") then
+            table.insert(objectives, {
+                id          = obj.getGUID(),
+                obj         = obj,
+                pos         = obj.getPosition(),
+                controlledBy = nil,
+            })
+        end
+    end
+    return objectives
+end
+
+function BoardState.getObjectives()
+    return objectives
+end
+
+-- Updates the position cache for a single unit.
+function BoardState.updateUnit(guid, pos, side)
+    unitPositions[guid] = { pos = pos, side = side, engaged = false }
+end
+
+function BoardState.removeUnit(guid)
+    unitPositions[guid] = nil
+end
+
+-- Recalculates engagement flags for all tracked units.
+-- A unit is engaged if any enemy model is within ENGAGEMENT_RANGE_INCHES.
+function BoardState.recalcEngagement(aiUnits, enemyUnits)
+    -- Clear flags
+    for guid, _ in pairs(unitPositions) do
+        unitPositions[guid].engaged = false
+    end
+
+    for _, aiUnit in ipairs(aiUnits or {}) do
+        local aiPos = aiUnit.obj and aiUnit.obj.getPosition()
+        if aiPos then
+            for _, enemyUnit in ipairs(enemyUnits or {}) do
+                local ePos = enemyUnit.obj and enemyUnit.obj.getPosition()
+                if ePos then
+                    local dist = ttsToInches(distanceXZ(aiPos, ePos))
+                    if dist <= ENGAGEMENT_RANGE_INCHES then
+                        local guid = aiUnit.obj.getGUID()
+                        if unitPositions[guid] then
+                            unitPositions[guid].engaged = true
+                        end
+                        break
+                    end
+                end
+            end
+        end
+    end
+end
+
+function BoardState.isEngaged(guid)
+    return unitPositions[guid] and unitPositions[guid].engaged or false
+end
+
+-- Returns sorted list of objectives by distance from a given position.
+function BoardState.objectivesByDistance(pos)
+    local sorted = {}
+    for _, obj in ipairs(objectives) do
+        local dist = BoardState.distanceInches(pos, obj.pos)
+        table.insert(sorted, { objective = obj, distance = dist })
+    end
+    table.sort(sorted, function(a, b) return a.distance < b.distance end)
+    return sorted
+end
+
+-- Returns the closest enemy unit to a given position.
+function BoardState.closestEnemy(pos, enemyUnits)
+    local closest, minDist = nil, math.huge
+    for _, unit in ipairs(enemyUnits or {}) do
+        if unit.obj then
+            local d = BoardState.distanceInches(pos, unit.obj.getPosition())
+            if d < minDist then
+                minDist = d
+                closest = unit
+            end
+        end
+    end
+    return closest, minDist
+end
+
+-- Updates objective control by checking which side has higher total OC within 3".
+function BoardState.updateObjectiveControl(aiUnits, enemyUnits, aiSide)
+    local CONTROL_RANGE = 3.0
+    for _, objective in ipairs(objectives) do
+        local aiOC, enemyOC = 0, 0
+        for _, unit in ipairs(aiUnits or {}) do
+            if unit.obj then
+                local d = BoardState.distanceInches(objective.pos, unit.obj.getPosition())
+                if d <= CONTROL_RANGE then
+                    aiOC = aiOC + (unit.stats and unit.stats.OC or 1)
+                end
+            end
+        end
+        for _, unit in ipairs(enemyUnits or {}) do
+            if unit.obj then
+                local d = BoardState.distanceInches(objective.pos, unit.obj.getPosition())
+                if d <= CONTROL_RANGE then
+                    enemyOC = enemyOC + (unit.stats and unit.stats.OC or 1)
+                end
+            end
+        end
+
+        if aiOC > enemyOC then
+            objective.controlledBy = aiSide
+        elseif enemyOC > aiOC then
+            objective.controlledBy = (aiSide == "red") and "blue" or "red"
+        else
+            objective.controlledBy = nil  -- contested
+        end
+    end
+end
+
+-- Returns count of objectives currently controlled by the given side.
+function BoardState.objectivesControlledBy(side)
+    local count = 0
+    for _, obj in ipairs(objectives) do
+        if obj.controlledBy == side then count = count + 1 end
+    end
+    return count
+end

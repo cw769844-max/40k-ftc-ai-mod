@@ -1,0 +1,344 @@
+-- Datasheet Database
+-- Warhammer 40K 10th Edition unit stats.
+-- Stats: M (movement inches), T (toughness), W (wounds), SV (save), INSV (invuln save),
+--        LD (leadership), OC (objective control).
+-- Weapons: A (attacks), BS/WS (skill, target roll to hit), S (strength), AP, D (damage), type.
+-- Extend this table with additional factions and units as needed.
+-- Names must match YellowScribe model names exactly (case-insensitive lookup applied).
+
+DatasheetDB = {}
+
+local db = {
+
+    -- =====================================================================
+    -- SPACE MARINES (generic / Ultramarines baseline)
+    -- =====================================================================
+    ["intercessors"] = {
+        M=6, T=4, W=2, SV=3, INSV=0, LD=6, OC=2,
+        keywords = {"INFANTRY","IMPERIUM","ADEPTUS ASTARTES"},
+        weapons = {
+            { name="Bolt Rifle",    type="ranged", R=30, A=2, BS=3, S=4, AP=-1, D=1 },
+            { name="Bolt Pistol",   type="ranged", R=12, A=1, BS=3, S=4, AP=0,  D=1 },
+            { name="Close Combat",  type="melee",       A=3, WS=3, S=4, AP=0,  D=1 },
+        },
+        abilities = {},
+    },
+    ["assault intercessors"] = {
+        M=6, T=4, W=2, SV=3, INSV=0, LD=6, OC=2,
+        keywords = {"INFANTRY","IMPERIUM","ADEPTUS ASTARTES","MELEE"},
+        weapons = {
+            { name="Astartes Chainsword", type="melee", A=4, WS=3, S=4, AP=-1, D=1 },
+            { name="Heavy Bolt Pistol",   type="ranged", R=12, A=1, BS=3, S=4, AP=-1, D=1 },
+        },
+        abilities = {},
+    },
+    ["infernus marines"] = {
+        M=6, T=4, W=2, SV=3, INSV=0, LD=6, OC=2,
+        keywords = {"INFANTRY","IMPERIUM","ADEPTUS ASTARTES"},
+        weapons = {
+            { name="Pyreblaster", type="ranged", R=12, A="D6", BS=0, S=5, AP=0, D=1,
+              special="IGNORES COVER,TORRENT" },
+            { name="Close Combat", type="melee", A=3, WS=3, S=4, AP=0, D=1 },
+        },
+        abilities = {},
+    },
+    ["hellblasters"] = {
+        M=6, T=4, W=2, SV=3, INSV=0, LD=6, OC=2,
+        keywords = {"INFANTRY","IMPERIUM","ADEPTUS ASTARTES"},
+        weapons = {
+            { name="Plasma Incinerator (Standard)", type="ranged", R=30, A=2, BS=3, S=7, AP=-2, D=1 },
+            { name="Plasma Incinerator (Supercharge)", type="ranged", R=30, A=2, BS=3, S=8, AP=-3, D=2,
+              special="HAZARDOUS" },
+        },
+        abilities = {},
+    },
+    ["eradicators"] = {
+        M=6, T=5, W=3, SV=3, INSV=0, LD=6, OC=1,
+        keywords = {"INFANTRY","IMPERIUM","ADEPTUS ASTARTES"},
+        weapons = {
+            { name="Melta Rifle",     type="ranged", R=18, A=2, BS=3, S=9, AP=-4, D="D6",
+              special="MELTA 2" },
+            { name="Close Combat",    type="melee",       A=3, WS=3, S=5, AP=0, D=1 },
+        },
+        abilities = {},
+    },
+    ["redemptor dreadnought"] = {
+        M=8, T=10, W=12, SV=2, INSV=0, LD=6, OC=3,
+        keywords = {"VEHICLE","WALKER","IMPERIUM","ADEPTUS ASTARTES","DREADNOUGHT"},
+        weapons = {
+            { name="Macro Plasma Incinerator (Standard)", type="ranged", R=36, A=3, BS=3, S=8, AP=-3, D=3 },
+            { name="Macro Plasma Incinerator (Supercharge)", type="ranged", R=36, A=3, BS=3, S=9, AP=-4, D=4,
+              special="HAZARDOUS" },
+            { name="Redemptor Fist", type="melee", A=5, WS=3, S=12, AP=-3, D=3 },
+        },
+        abilities = {"FIGHTS FIRST"},
+    },
+    ["captain"] = {
+        M=6, T=4, W=5, SV=2, INSV=4, LD=6, OC=1,
+        keywords = {"INFANTRY","CHARACTER","IMPERIUM","ADEPTUS ASTARTES"},
+        weapons = {
+            { name="Master-crafted Bolter", type="ranged", R=24, A=3, BS=2, S=4, AP=-1, D=2 },
+            { name="Power Fist",            type="melee",       A=4, WS=2, S=8, AP=-2, D=2 },
+        },
+        abilities = {"LEAD THE CHARGE: Once per turn, when this model's unit makes a Charge move, until the end of the turn, melee weapons equipped by models in this unit have the [LETHAL HITS] ability."},
+    },
+    ["lieutenant"] = {
+        M=6, T=4, W=4, SV=3, INSV=0, LD=6, OC=1,
+        keywords = {"INFANTRY","CHARACTER","IMPERIUM","ADEPTUS ASTARTES"},
+        weapons = {
+            { name="Bolt Rifle",   type="ranged", R=30, A=2, BS=2, S=4, AP=-1, D=1 },
+            { name="Power Sword",  type="melee",       A=4, WS=2, S=5, AP=-2, D=1 },
+        },
+        abilities = {"TACTICAL PRECISION: Weapons equipped by models in this model's unit have the [LETHAL HITS] ability."},
+    },
+    ["librarian"] = {
+        M=6, T=4, W=4, SV=3, INSV=4, LD=6, OC=1,
+        keywords = {"INFANTRY","CHARACTER","PSYKER","IMPERIUM","ADEPTUS ASTARTES"},
+        weapons = {
+            { name="Force Weapon", type="melee", A=5, WS=2, S=6, AP=-1, D="D3",
+              special="PSYCHIC" },
+            { name="Bolt Pistol",  type="ranged", R=12, A=1, BS=2, S=4, AP=0, D=1 },
+        },
+        abilities = {"SMITE: Once per turn, select one enemy unit within 12\" and visible. Roll 1 D6 per PSYKER keyword in this model\\'s unit: on a 4+, that enemy unit suffers D3 mortal wounds."},
+    },
+    ["impulsor"] = {
+        M=10, T=9, W=11, SV=3, INSV=0, LD=6, OC=2,
+        keywords = {"VEHICLE","TRANSPORT","FLY","IMPERIUM","ADEPTUS ASTARTES"},
+        weapons = {
+            { name="Twin Bolt Rifle", type="ranged", R=30, A=4, BS=3, S=4, AP=-1, D=1, special="TWIN-LINKED" },
+        },
+        abilities = {"ASSAULT RAMP: Units can disembark after the Transport moves."},
+        transport = { capacity=6, keywords={"INFANTRY","ADEPTUS ASTARTES"} },
+    },
+
+    -- =====================================================================
+    -- CHAOS SPACE MARINES (baseline)
+    -- =====================================================================
+    ["chaos space marines"] = {
+        M=6, T=4, W=2, SV=3, INSV=0, LD=7, OC=2,
+        keywords = {"INFANTRY","CHAOS","HERETIC ASTARTES"},
+        weapons = {
+            { name="Boltgun",     type="ranged", R=24, A=2, BS=3, S=4, AP=0, D=1 },
+            { name="Bolt Pistol", type="ranged", R=12, A=1, BS=3, S=4, AP=0, D=1 },
+            { name="Close Combat Weapon", type="melee", A=3, WS=3, S=4, AP=0, D=1 },
+        },
+        abilities = {},
+    },
+    ["legionaries"] = {
+        M=6, T=4, W=2, SV=3, INSV=0, LD=7, OC=2,
+        keywords = {"INFANTRY","CHAOS","HERETIC ASTARTES"},
+        weapons = {
+            { name="Boltgun",          type="ranged", R=24, A=2, BS=3, S=4, AP=0, D=1 },
+            { name="Close Combat Weapon", type="melee", A=3, WS=3, S=4, AP=0, D=1 },
+        },
+        abilities = {"VETERANS OF THE LONG WAR: Each time this unit is selected to shoot or fight, you can re-roll one Hit roll and one Wound roll."},
+    },
+    ["obliterators"] = {
+        M=5, T=8, W=4, SV=2, INSV=4, LD=7, OC=1,
+        keywords = {"INFANTRY","CHAOS","HERETIC ASTARTES","DAEMON"},
+        weapons = {
+            { name="Fleshmetal Guns", type="ranged", R=24, A=4, BS=3, S=8, AP=-2, D=2,
+              special="DEVASTATING WOUNDS" },
+            { name="Crushing Fists",  type="melee",       A=4, WS=3, S=8, AP=-2, D=2 },
+        },
+        abilities = {},
+    },
+
+    -- =====================================================================
+    -- TYRANIDS
+    -- =====================================================================
+    ["termagants"] = {
+        M=6, T=3, W=1, SV=5, INSV=0, LD=8, OC=2,
+        keywords = {"INFANTRY","TYRANIDS"},
+        weapons = {
+            { name="Fleshborer", type="ranged", R=18, A=1, BS=4, S=5, AP=0, D=1 },
+            { name="Claws and Teeth", type="melee", A=1, WS=4, S=3, AP=0, D=1 },
+        },
+        abilities = {},
+    },
+    ["hormagaunts"] = {
+        M=8, T=3, W=1, SV=5, INSV=0, LD=8, OC=2,
+        keywords = {"INFANTRY","TYRANIDS","MELEE"},
+        weapons = {
+            { name="Scything Talons", type="melee", A=2, WS=4, S=3, AP=0, D=1,
+              special="LETHAL HITS" },
+        },
+        abilities = {},
+    },
+    ["carnifex"] = {
+        M=8, T=9, W=8, SV=2, INSV=0, LD=8, OC=3,
+        keywords = {"MONSTER","TYRANIDS"},
+        weapons = {
+            { name="Bone Mace",        type="melee", A=4, WS=4, S=14, AP=-2, D=3 },
+            { name="Scything Talons",  type="melee", A=4, WS=4, S=8,  AP=-1, D=2 },
+            { name="Bio-plasmic Cannon", type="ranged", R=18, A="D6+1", BS=4, S=9, AP=-2, D=3 },
+        },
+        abilities = {"LIVING BATTERING RAM: After this model makes a Charge move, select one enemy unit it is within Engagement Range of; that enemy unit suffers D3 mortal wounds."},
+    },
+
+    -- =====================================================================
+    -- ORKS
+    -- =====================================================================
+    ["boyz"] = {
+        M=6, T=5, W=1, SV=6, INSV=0, LD=8, OC=2,
+        keywords = {"INFANTRY","ORK","MELEE"},
+        weapons = {
+            { name="Slugga",  type="ranged", R=12, A=1, BS=5, S=4, AP=0, D=1 },
+            { name="Choppa",  type="melee",       A=2, WS=3, S=5, AP=-1, D=1 },
+        },
+        abilities = {},
+    },
+    ["nobz"] = {
+        M=6, T=5, W=3, SV=4, INSV=0, LD=7, OC=1,
+        keywords = {"INFANTRY","ORK","MELEE"},
+        weapons = {
+            { name="Big Choppa",  type="melee", A=3, WS=3, S=7, AP=-1, D=2 },
+            { name="Slugga",      type="ranged", R=12, A=1, BS=5, S=4, AP=0, D=1 },
+        },
+        abilities = {},
+    },
+
+    -- =====================================================================
+    -- NECRONS
+    -- =====================================================================
+    ["necron warriors"] = {
+        M=5, T=4, W=1, SV=4, INSV=0, LD=10, OC=2,
+        keywords = {"INFANTRY","NECRONS"},
+        weapons = {
+            { name="Gauss Flayer", type="ranged", R=24, A=1, BS=3, S=4, AP=0, D=1 },
+            { name="Close Combat Weapon", type="melee", A=1, WS=3, S=4, AP=0, D=1 },
+        },
+        abilities = {"REANIMATION PROTOCOLS: At the end of your Command phase, return up to D3 models to this unit."},
+    },
+    ["immortals"] = {
+        M=5, T=4, W=2, SV=3, INSV=0, LD=10, OC=2,
+        keywords = {"INFANTRY","NECRONS"},
+        weapons = {
+            { name="Gauss Blaster", type="ranged", R=24, A=2, BS=3, S=5, AP=-2, D=1 },
+        },
+        abilities = {"REANIMATION PROTOCOLS: At the end of your Command phase, return up to D3 models to this unit."},
+    },
+    ["doomsday ark"] = {
+        M=8, T=10, W=14, SV=3, INSV=4, LD=10, OC=3,
+        keywords = {"VEHICLE","FLY","NECRONS"},
+        weapons = {
+            { name="Doomsday Cannon (Low)", type="ranged", R=48, A="D6", BS=3, S=16, AP=-5, D=5 },
+            { name="Doomsday Cannon (High)", type="ranged", R=48, A="2D6", BS=3, S=16, AP=-5, D=5 },
+            { name="Gauss Flayer Array", type="ranged", R=24, A=10, BS=3, S=4, AP=0, D=1 },
+        },
+        abilities = {},
+    },
+
+    -- =====================================================================
+    -- T'AU EMPIRE
+    -- =====================================================================
+    ["fire warriors"] = {
+        M=6, T=3, W=1, SV=4, INSV=0, LD=7, OC=2,
+        keywords = {"INFANTRY","TAU EMPIRE"},
+        weapons = {
+            { name="Pulse Rifle", type="ranged", R=30, A=1, BS=4, S=5, AP=-1, D=1 },
+            { name="Pulse Pistol", type="ranged", R=12, A=1, BS=4, S=5, AP=-1, D=1 },
+            { name="Close Combat Weapon", type="melee", A=1, WS=5, S=3, AP=0, D=1 },
+        },
+        abilities = {},
+    },
+    ["crisis battlesuit"] = {
+        M=10, T=6, W=4, SV=3, INSV=5, LD=7, OC=1,
+        keywords = {"BATTLESUIT","FLY","TAU EMPIRE"},
+        weapons = {
+            { name="Cyclic Ion Blaster (Standard)", type="ranged", R=18, A=4, BS=4, S=7, AP=-1, D=1 },
+            { name="Fusion Blaster", type="ranged", R=12, A=2, BS=4, S=9, AP=-4, D="D6",
+              special="MELTA 2" },
+        },
+        abilities = {"DEEP STRIKE"},
+    },
+
+    -- =====================================================================
+    -- AELDARI (Craftworlds)
+    -- =====================================================================
+    ["guardians"] = {
+        M=7, T=3, W=1, SV=4, INSV=0, LD=6, OC=2,
+        keywords = {"INFANTRY","AELDARI"},
+        weapons = {
+            { name="Shuriken Catapult", type="ranged", R=18, A=2, BS=3, S=4, AP=-1, D=1 },
+            { name="Close Combat Weapon", type="melee", A=1, WS=4, S=3, AP=0, D=1 },
+        },
+        abilities = {},
+    },
+
+    -- =====================================================================
+    -- DEATH GUARD
+    -- =====================================================================
+    ["plague marines"] = {
+        M=5, T=5, W=2, SV=3, INSV=5, LD=7, OC=2,
+        keywords = {"INFANTRY","CHAOS","HERETIC ASTARTES","NURGLE","PLAGUE MARINES"},
+        weapons = {
+            { name="Boltgun",             type="ranged", R=24, A=2, BS=3, S=4, AP=0, D=1 },
+            { name="Plague Knife",         type="melee",       A=2, WS=3, S=4, AP=-1, D=1 },
+        },
+        abilities = {"PLAGUE WEAPONS: Unmodified wound rolls of 6 for attacks made with Plague weapons have the [LETHAL HITS] ability."},
+    },
+    ["bloat-drone"] = {
+        M=8, T=8, W=10, SV=4, INSV=5, LD=7, OC=2,
+        keywords = {"VEHICLE","FLY","CHAOS","NURGLE","DAEMON"},
+        weapons = {
+            { name="Plaguespitter", type="ranged", R=9, A="D6+2", BS=0, S=6, AP=-1, D=1,
+              special="TORRENT,IGNORES COVER" },
+            { name="Fleshmower",    type="melee",       A=6, WS=3, S=6, AP=-1, D=1,
+              special="SUSTAINED HITS 1" },
+        },
+        abilities = {},
+    },
+
+    -- =====================================================================
+    -- IMPERIAL GUARD (Astra Militarum)
+    -- =====================================================================
+    ["infantry squad"] = {
+        M=6, T=3, W=1, SV=5, INSV=0, LD=7, OC=2,
+        keywords = {"INFANTRY","IMPERIUM","ASTRA MILITARUM"},
+        weapons = {
+            { name="Lasgun",       type="ranged", R=24, A=1, BS=4, S=3, AP=0, D=1 },
+            { name="Laspistol",    type="ranged", R=12, A=1, BS=4, S=3, AP=0, D=1 },
+            { name="Close Combat", type="melee",       A=1, WS=4, S=3, AP=0, D=1 },
+        },
+        abilities = {},
+    },
+    ["leman russ battle tank"] = {
+        M=10, T=11, W=13, SV=2, INSV=0, LD=7, OC=3,
+        keywords = {"VEHICLE","IMPERIUM","ASTRA MILITARUM"},
+        weapons = {
+            { name="Leman Russ Battle Cannon", type="ranged", R=48, A="D6+1", BS=4, S=10, AP=-2, D=3,
+              special="BLAST" },
+            { name="Lascannon",               type="ranged", R=48, A=1, BS=4, S=12, AP=-3, D="D6+1" },
+            { name="Heavy Bolter",            type="ranged", R=36, A=3, BS=4, S=5, AP=-1, D=2 },
+            { name="Crushing Tracks",         type="melee",       A=3, WS=4, S=8, AP=-1, D=2 },
+        },
+        abilities = {},
+    },
+}
+
+-- Case-insensitive lookup with partial match fallback.
+function DatasheetDB.lookup(name)
+    if not name or name == "" then return nil end
+    local key = name:lower():gsub("%s+", " "):gsub("^%s+", ""):gsub("%s+$", "")
+
+    -- Exact match
+    if db[key] then return db[key] end
+
+    -- Partial match: return first entry whose key is contained in the name or vice versa
+    for dbKey, stats in pairs(db) do
+        if key:find(dbKey, 1, true) or dbKey:find(key, 1, true) then
+            return stats
+        end
+    end
+
+    return nil
+end
+
+-- Returns all known unit names (useful for diagnostics).
+function DatasheetDB.allNames()
+    local names = {}
+    for k, _ in pairs(db) do table.insert(names, k) end
+    table.sort(names)
+    return names
+end

@@ -1,0 +1,160 @@
+-- Army Manager
+-- Detects which army belongs to the AI by scanning the table at game start.
+-- Detection is purely spatial: models on the AI's assigned table half are its army.
+-- Uses the YellowScribe army mat (BCBtype == 'armyMat') as the primary anchor.
+
+ArmyManager = {}
+
+-- Z > 0 is the Red deployment half; Z < 0 is Blue.
+local SIDE_Z = { red = 1, blue = -1 }
+local ARMY_MAT_SCAN_RADIUS = 80   -- TTS units; wide enough to catch all units near the mat
+local DEPLOY_HALF_THRESHOLD = 0   -- Z == 0 is centreline
+
+local aiSide       = nil
+local aiUnits      = {}   -- list of UnitTracker unit records
+local enemyUnits   = {}
+
+local function isOnSide(pos, side)
+    if side == "red"  then return pos.z >  DEPLOY_HALF_THRESHOLD end
+    if side == "blue" then return pos.z <  DEPLOY_HALF_THRESHOLD end
+    return false
+end
+
+-- Identifies the YellowScribe army mat for the given side.
+local function findArmyMat(side)
+    for _, obj in ipairs(getAllObjects()) do
+        local bcbtype = obj.getVar("BCBtype")
+        if bcbtype == "armyMat" then
+            local pos = obj.getPosition()
+            if isOnSide(pos, side) then
+                return obj
+            end
+        end
+    end
+    return nil
+end
+
+-- Collects all non-terrain objects on the AI's side of the table.
+-- Excludes FTC tool objects (identified by GM notes tags).
+local function collectUnitsOnSide(side)
+    local units = {}
+    for _, obj in ipairs(getAllObjects()) do
+        local pos   = obj.getPosition()
+        local notes = obj.getGMNotes() or ""
+        local name  = obj.getName() or ""
+
+        -- Skip FTC infrastructure objects
+        if notes:find("FTC_TOOL") or notes:find("objectiveMarker") or
+           notes:find("terrain") or name == "" then
+            goto continue
+        end
+
+        -- Skip non-physical objects (zones, scripting triggers, etc.)
+        local objType = obj.type or ""
+        if objType == "Scripting" or objType == "Fog" or objType == "Hand" then
+            goto continue
+        end
+
+        if isOnSide(pos, side) then
+            local bcbtype = obj.getVar("BCBtype")
+            -- Skip the army mat itself; it's not a unit
+            if bcbtype ~= "armyMat" then
+                table.insert(units, obj)
+            end
+        end
+        ::continue::
+    end
+    return units
+end
+
+function ArmyManager.init(assignedSide)
+    aiSide    = assignedSide
+    aiUnits   = {}
+    enemyUnits = {}
+
+    local enemySide = (assignedSide == "red") and "blue" or "red"
+
+    -- Verify army mat exists on our side
+    local mat = findArmyMat(assignedSide)
+    if not mat then
+        Narrator.announce("[AI] Warning: No army mat found on " .. assignedSide .. " side. "
+            .. "Ensure the YellowScribe army is placed before starting.")
+    else
+        Narrator.announce("[AI] Army mat found on " .. assignedSide .. " side.")
+    end
+
+    -- Collect all objects on each side and wrap them in UnitTracker records
+    local aiObjs    = collectUnitsOnSide(assignedSide)
+    local enemyObjs = collectUnitsOnSide(enemySide)
+
+    for _, obj in ipairs(aiObjs) do
+        local record = UnitTracker.createRecord(obj, assignedSide)
+        if record then table.insert(aiUnits, record) end
+    end
+
+    for _, obj in ipairs(enemyObjs) do
+        local record = UnitTracker.createRecord(obj, enemySide)
+        if record then table.insert(enemyUnits, record) end
+    end
+
+    Narrator.announce(string.format("[AI] Detected %d AI units and %d enemy units.",
+        #aiUnits, #enemyUnits))
+
+    -- Seed board state positions
+    for _, u in ipairs(aiUnits) do
+        BoardState.updateUnit(u.guid, u.obj.getPosition(), assignedSide)
+    end
+    for _, u in ipairs(enemyUnits) do
+        BoardState.updateUnit(u.guid, u.obj.getPosition(), enemySide)
+    end
+
+    -- Scan for objective markers
+    BoardState.scanObjectives()
+
+    -- Initialise reserves (units not yet on table start in reserve pool if tagged)
+    ReserveManager.init(aiUnits)
+
+    -- Hand off side info to GameState
+    GameState.init(assignedSide)
+
+    return #aiUnits > 0
+end
+
+function ArmyManager.getAISide()     return aiSide     end
+function ArmyManager.getAIUnits()    return aiUnits    end
+function ArmyManager.getEnemyUnits() return enemyUnits end
+
+-- Remove a destroyed unit from the active list and board state.
+function ArmyManager.removeUnit(guid)
+    for i, u in ipairs(aiUnits) do
+        if u.guid == guid then
+            table.remove(aiUnits, i)
+            BoardState.removeUnit(guid)
+            return
+        end
+    end
+    for i, u in ipairs(enemyUnits) do
+        if u.guid == guid then
+            table.remove(enemyUnits, i)
+            BoardState.removeUnit(guid)
+            return
+        end
+    end
+end
+
+-- Refreshes positions of all tracked units (called at start of each phase).
+function ArmyManager.refreshPositions()
+    for _, u in ipairs(aiUnits) do
+        if u.obj and u.obj.isValid() then
+            BoardState.updateUnit(u.guid, u.obj.getPosition(), aiSide)
+        end
+    end
+    for _, u in ipairs(enemyUnits) do
+        if u.obj and u.obj.isValid() then
+            local enemySide = (aiSide == "red") and "blue" or "red"
+            BoardState.updateUnit(u.guid, u.obj.getPosition(), enemySide)
+        end
+    end
+    BoardState.recalcEngagement(aiUnits, enemyUnits)
+    BoardState.updateObjectiveControl(aiUnits, enemyUnits, aiSide)
+end

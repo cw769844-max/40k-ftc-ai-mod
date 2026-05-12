@@ -1,0 +1,61 @@
+-- Objective Tracker
+-- Scores and prioritises objectives for the AI each turn.
+-- Works with BoardState's control calculations to determine scoring opportunities.
+
+ObjectiveTracker = {}
+
+-- Returns a priority-sorted list of objectives the AI should contest or hold.
+-- Higher score = higher priority for AI attention.
+function ObjectiveTracker.prioritised(aiSide)
+    local objectives = BoardState.getObjectives()
+    local aiUnits    = ArmyManager.getAIUnits()
+    local scored     = {}
+
+    for _, obj in ipairs(objectives) do
+        local score = 0
+
+        -- Unclaimed or enemy-held objectives are high priority
+        if obj.controlledBy == nil then
+            score = score + 10
+        elseif obj.controlledBy ~= aiSide then
+            score = score + 15   -- enemy-held is most valuable to contest
+        else
+            score = score + 3    -- already holding; maintain but lower priority
+        end
+
+        -- Closer objectives (to AI units) are more actionable
+        local minDist = math.huge
+        for _, unit in ipairs(aiUnits) do
+            if unit.obj and unit.obj.isValid() and not unit.inReserve then
+                local d = BoardState.distanceInches(obj.pos, unit.obj.getPosition())
+                if d < minDist then minDist = d end
+            end
+        end
+        -- Discount by distance: objectives we can reach this turn score higher
+        if minDist < math.huge then
+            score = score + math.max(0, 20 - minDist)
+        end
+
+        table.insert(scored, { objective = obj, score = score, distance = minDist })
+    end
+
+    table.sort(scored, function(a, b) return a.score > b.score end)
+    return scored
+end
+
+-- Returns total VPs the AI would score if it held its current objectives.
+function ObjectiveTracker.estimateVPGain(aiSide)
+    local count = BoardState.objectivesControlledBy(aiSide)
+    -- Rough estimate: 4 VP per held objective per round (matches 10e primary scoring)
+    return count * 4
+end
+
+-- Called at the end of the AI's Command Phase to score primary objectives.
+-- Adds VP to the FTC counter for each objective the AI controls.
+function ObjectiveTracker.scoreObjectives(aiSide)
+    local count  = BoardState.objectivesControlledBy(aiSide)
+    if count == 0 then return end
+    local vp = count * 4
+    FTCInterface.addVP(aiSide, vp)
+    Narrator.announce(string.format("Scoring %d VP from %d objective(s).", vp, count))
+end

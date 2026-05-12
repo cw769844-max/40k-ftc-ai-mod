@@ -1,0 +1,116 @@
+-- Threat Assessment
+-- Scores enemy units by how dangerous they are to the AI.
+-- Used by the decision engine to prioritise targets.
+
+ThreatAssessment = {}
+
+-- Computes an expected damage-per-round score for an enemy unit against average AI targets.
+-- Higher score = more threatening = higher kill priority.
+local function expectedDamage(enemyUnit)
+    local stats = enemyUnit.stats
+    if not stats then return 1 end
+
+    local totalScore = 0
+    for _, w in ipairs(stats.weapons or {}) do
+        local attacks = tonumber(w.A) or 2
+        local hitChance  = math.max(0, (7 - (w.BS or w.WS or 4))) / 6
+        local woundChance
+        local s = w.S or 4
+        local t = 4   -- assume average AI toughness 4
+        if s >= t * 2 then     woundChance = 5/6
+        elseif s > t then      woundChance = 4/6
+        elseif s == t then     woundChance = 3/6
+        elseif s * 2 <= t then woundChance = 1/6
+        else                   woundChance = 2/6
+        end
+
+        local saveChance = math.max(0, math.min(5, (4 + (w.AP or 0)) - 1)) / 6
+        local unsavedChance = 1 - saveChance
+        local dmg = tonumber(w.D) or 1
+
+        totalScore = totalScore + attacks * hitChance * woundChance * unsavedChance * dmg
+    end
+
+    -- Bonus for high-value targets: Characters and big models
+    for _, kw in ipairs(stats.keywords or {}) do
+        if kw:upper() == "CHARACTER" then totalScore = totalScore * 1.3 end
+        if kw:upper() == "VEHICLE"   then totalScore = totalScore * 1.1 end
+        if kw:upper() == "MONSTER"   then totalScore = totalScore * 1.1 end
+    end
+
+    return totalScore
+end
+
+-- Scores a target for shooting priority.
+-- Balances threat level with how killable the unit is right now.
+function ThreatAssessment.shootingPriority(enemyUnit, shooterPos)
+    local stats = enemyUnit.stats or {}
+    local pos   = enemyUnit.obj and enemyUnit.obj.getPosition()
+    if not pos then return 0 end
+
+    local dist   = BoardState.distanceInches(shooterPos, pos)
+    local threat = expectedDamage(enemyUnit)
+
+    -- Efficiency: prefer nearly-dead units (spend fewer attacks to kill)
+    local hpRatio = (enemyUnit.currentW or 1) / math.max(stats.W or 1, 1)
+    local killEfficiency = 1 / math.max(hpRatio, 0.1)
+
+    -- Proximity: closer threats are more urgent
+    local proximityBonus = math.max(0, 30 - dist) / 30
+
+    return threat * killEfficiency * (1 + proximityBonus)
+end
+
+-- Scores a target for melee charge priority.
+function ThreatAssessment.chargePriority(enemyUnit, chargerPos, chargerStats)
+    local pos = enemyUnit.obj and enemyUnit.obj.getPosition()
+    if not pos then return 0 end
+
+    local dist = BoardState.distanceInches(chargerPos, pos)
+    if dist > 12 then return 0 end   -- outside maximum 2D6 charge range
+
+    local threat   = expectedDamage(enemyUnit)
+    local chargeOK = (dist <= 7) and 1.0 or 0.4   -- >7" charge is unreliable on 2D6
+
+    -- Prefer charging melee-dangerous enemies before they shoot us
+    local meleeThreat = 0
+    for _, w in ipairs((enemyUnit.stats or {}).weapons or {}) do
+        if w.type == "melee" then
+            meleeThreat = meleeThreat + ((w.A or 1) * (w.D or 1))
+        end
+    end
+
+    -- Prefer isolating enemy from objectives
+    local objControl = BoardState.objectivesControlledBy((ArmyManager.getAISide() == "red") and "blue" or "red")
+    local objectivePressure = objControl > 0 and 1.2 or 1.0
+
+    return threat * chargeOK * objectivePressure
+end
+
+-- Returns the enemy unit list sorted by shooting priority from a given position.
+function ThreatAssessment.sortedByShootingPriority(enemyUnits, shooterPos)
+    local scored = {}
+    for _, u in ipairs(enemyUnits or {}) do
+        if u.obj and u.obj.isValid() and not u.inReserve then
+            local score = ThreatAssessment.shootingPriority(u, shooterPos)
+            table.insert(scored, { unit = u, score = score })
+        end
+    end
+    table.sort(scored, function(a, b) return a.score > b.score end)
+    return scored
+end
+
+-- Returns the enemy unit list sorted by charge priority from a given position.
+function ThreatAssessment.sortedByChargePriority(enemyUnits, chargerPos, chargerStats)
+    local scored = {}
+    for _, u in ipairs(enemyUnits or {}) do
+        if u.obj and u.obj.isValid() and not u.inReserve then
+            local score = ThreatAssessment.chargePriority(u, chargerPos, chargerStats)
+            if score > 0 then
+                table.insert(scored, { unit = u, score = score })
+            end
+        end
+    end
+    table.sort(scored, function(a, b) return a.score > b.score end)
+    return scored
+end

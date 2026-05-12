@@ -1,0 +1,99 @@
+-- Movement Phase Handler
+-- Executes the AI's Movement Phase:
+--   1. Deploy Strategic Reserve units (arrive from round 2)
+--   2. Move each non-reserve, non-activated unit to its best destination
+--   3. Announce Advance moves (unit cannot shoot after advancing)
+-- Coherency: multi-model units should stay within 2" chain — the AI moves
+-- the unit leader to the destination and the remainder follow within 2".
+
+MovementPhase = {}
+
+local ADVANCE_ROLL_FACES = 6   -- D6 advance roll
+
+local function advanceRoll()
+    return math.random(1, ADVANCE_ROLL_FACES)
+end
+
+-- Moves a single unit object smoothly to the destination position.
+-- offsetIndex staggers units slightly so they don't stack exactly.
+local function moveUnit(unit, destPos, offsetIndex)
+    if not unit.obj or not unit.obj.isValid() then return end
+    local offset = offsetIndex or 0
+    local pos = {
+        x = destPos.x + (offset % 3) * 1.2,
+        y = destPos.y or 1.5,
+        z = destPos.z + math.floor(offset / 3) * 1.2,
+    }
+    unit.obj.setPositionSmooth(pos)
+    BoardState.updateUnit(unit.guid, pos, ArmyManager.getAISide())
+end
+
+function MovementPhase.execute(aiSide, round)
+    Narrator.phaseStart("Movement", round)
+    ArmyManager.refreshPositions()
+
+    local aiUnits    = ArmyManager.getAIUnits()
+    local enemyUnits = ArmyManager.getEnemyUnits()
+
+    -- ── 1. Deploy reserves ────────────────────────────────────────────────
+    local arrived = ReserveManager.deployReady(aiSide, enemyUnits)
+    -- Newly arrived units are not activated (they move from reserve as their move action)
+    for _, unit in ipairs(arrived or {}) do
+        UnitTracker.markActivated(unit)
+    end
+
+    -- ── 2. Move on-table units ────────────────────────────────────────────
+    -- Small delay between each move so TTS can animate smoothly.
+    local moveIndex = 0
+    for _, unit in ipairs(aiUnits) do
+        if not UnitTracker.canAct(unit) then goto continue end
+        if unit.inReserve then goto continue end
+
+        local dest = DecisionEngine.bestMoveTarget(unit, enemyUnits)
+        if not dest then
+            Narrator.action(unit.name, "holds position", "no beneficial move found")
+            UnitTracker.markActivated(unit)
+            goto continue
+        end
+
+        local advanced   = false
+        local moveInches = unit.stats and unit.stats.M or 6
+
+        if DecisionEngine.shouldAdvance(unit, dest) then
+            local advBonus = advanceRoll()
+            moveInches = moveInches + advBonus
+            advanced   = true
+            Narrator.action(unit.name, string.format("Advances %d\"", moveInches),
+                string.format("(Move %d\" + Advance +%d\")", unit.stats and unit.stats.M or 6, advBonus))
+            unit.advanced = true
+        else
+            unit.advanced = false
+            Narrator.action(unit.name, string.format("Moves %d\"", moveInches))
+        end
+
+        -- Scale destination: if it's further than moveInches, stop partway.
+        local pos  = unit.obj.getPosition()
+        local dist = BoardState.distanceInches(pos, dest.pos)
+        if dist > moveInches then
+            -- Move directly toward destination, capped at moveInches
+            local ratio = moveInches / dist
+            dest.pos = {
+                x = pos.x + (dest.pos.x - pos.x) * ratio,
+                y = pos.y,
+                z = pos.z + (dest.pos.z - pos.z) * ratio,
+            }
+        end
+
+        moveUnit(unit, dest.pos, moveIndex)
+        moveIndex = moveIndex + 1
+        UnitTracker.markActivated(unit)
+
+        ::continue::
+    end
+
+    -- Refresh positions after all moves settle
+    Wait.time(function()
+        ArmyManager.refreshPositions()
+        Narrator.announce("Movement Phase complete.")
+    end, 2.0)
+end

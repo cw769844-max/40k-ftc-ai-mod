@@ -1,0 +1,173 @@
+-- Reserve Manager
+-- Tracks units in Strategic Reserve and manages their arrival on the battlefield.
+-- 40K 10e rules: reserves can arrive from round 2 onward, placed anywhere on the
+-- battlefield edge or (for Deep Strike) anywhere >9" from enemy models.
+
+ReserveManager = {}
+
+local DEEP_STRIKE_CLEARANCE = 9.0    -- inches from nearest enemy
+local BOARD_EDGE_INSET      = 1.0    -- inches from table edge for arrival
+
+local reservePool   = {}   -- list of UnitTracker records currently in reserve
+local currentRound  = 1
+
+-- Board edge arrival zones (approximate TTS world coordinates).
+-- Adjust these to match the actual FTC battlefield layout.
+local BOARD = {
+    minX = -22, maxX = 22,   -- 44" wide board
+    minZ = -30, maxZ = 30,   -- 60" long board (Strike Force)
+}
+
+local function edgePositions(side)
+    -- Returns candidate arrival positions along the AI's board edge.
+    if side == "blue" then
+        -- Blue deploys at negative Z; their edge is the far negative Z end
+        local positions = {}
+        for x = BOARD.minX, BOARD.maxX, 4 do
+            table.insert(positions, {x=x, y=1.5, z=BOARD.minZ + BOARD_EDGE_INSET})
+        end
+        return positions
+    else
+        local positions = {}
+        for x = BOARD.minX, BOARD.maxX, 4 do
+            table.insert(positions, {x=x, y=1.5, z=BOARD.maxZ - BOARD_EDGE_INSET})
+        end
+        return positions
+    end
+end
+
+-- Returns true if a position is ≥9" from all enemy models (for Deep Strike).
+local function clearOfEnemies(pos, enemyUnits)
+    for _, unit in ipairs(enemyUnits or {}) do
+        if unit.obj and unit.obj.isValid() then
+            local d = BoardState.distanceInches(pos, unit.obj.getPosition())
+            if d < DEEP_STRIKE_CLEARANCE then return false end
+        end
+    end
+    return true
+end
+
+-- Finds the best Deep Strike position near a target objective.
+local function bestDeepStrikePosition(objective, enemyUnits, aiSide)
+    -- Try candidate positions in a ring around the objective at 10-12" range
+    local objPos = objective.pos
+    local candidates = {}
+    for angle = 0, 360, 30 do
+        local rad  = math.rad(angle)
+        local dist = 10  -- 10" from objective, safely outside 9" clearance from nearby enemy
+        local pos  = { x = objPos.x + dist * math.cos(rad),
+                       y = 1.5,
+                       z = objPos.z + dist * math.sin(rad) }
+        -- Clamp to board
+        pos.x = math.max(BOARD.minX, math.min(BOARD.maxX, pos.x))
+        pos.z = math.max(BOARD.minZ, math.min(BOARD.maxZ, pos.z))
+        if clearOfEnemies(pos, enemyUnits) then
+            table.insert(candidates, pos)
+        end
+    end
+    if #candidates > 0 then return candidates[1] end
+    return nil
+end
+
+function ReserveManager.init(aiUnits)
+    reservePool  = {}
+    currentRound = 1
+    -- Units tagged DEEP STRIKE or placed in reserve zone start in reserve.
+    for _, unit in ipairs(aiUnits or {}) do
+        local hasDeepStrike = false
+        for _, kw in ipairs(unit.stats and unit.stats.keywords or {}) do
+            if kw:upper() == "DEEP STRIKE" then hasDeepStrike = true; break end
+        end
+        for _, ab in ipairs(unit.stats and unit.stats.abilities or {}) do
+            if ab:upper():find("DEEP STRIKE") then hasDeepStrike = true; break end
+        end
+        if hasDeepStrike then
+            unit.inReserve      = true
+            unit.hasDeepStrike  = true
+            -- Move model off-board (high Y) so it doesn't block gameplay
+            if unit.obj and unit.obj.isValid() then
+                unit.obj.setPosition({x=50, y=5, z=50})
+                unit.obj.setLock(true)
+            end
+            table.insert(reservePool, unit)
+            Narrator.announce(string.format("%s placed in Strategic Reserve (Deep Strike).", unit.name))
+        end
+    end
+end
+
+function ReserveManager.onNewRound(round)
+    currentRound = round
+end
+
+-- Returns true if the AI should deploy a specific reserve unit this turn.
+-- Simple heuristic: deploy in round 2 if objectives are contested; else round 3.
+local function shouldDeployNow(unit)
+    if currentRound < 2 then return false end
+    local aiControlled = BoardState.objectivesControlledBy(ArmyManager.getAISide())
+    if currentRound == 2 and aiControlled < 2 then return true end
+    if currentRound >= 3 then return true end
+    return false
+end
+
+-- Deploys all reserve units that are ready to arrive.
+function ReserveManager.deployReady(aiSide, enemyUnits)
+    if #reservePool == 0 then return end
+
+    local objectives = BoardState.getObjectives()
+    local arrivals   = {}
+
+    for i = #reservePool, 1, -1 do
+        local unit = reservePool[i]
+        if shouldDeployNow(unit) then
+            local pos = nil
+
+            if unit.hasDeepStrike then
+                -- Find the best uncontrolled objective to Deep Strike near
+                for _, obj in ipairs(objectives) do
+                    if obj.controlledBy ~= aiSide then
+                        pos = bestDeepStrikePosition(obj, enemyUnits, aiSide)
+                        if pos then break end
+                    end
+                end
+                -- Fallback: any clear position near board centre
+                if not pos then
+                    local centre = {x=0, y=1.5, z=0}
+                    if clearOfEnemies(centre, enemyUnits) then pos = centre end
+                end
+            else
+                -- Standard Strategic Reserve: arrive from board edge
+                local edges = edgePositions(aiSide)
+                for _, ep in ipairs(edges) do
+                    if clearOfEnemies(ep, enemyUnits) then pos = ep; break end
+                end
+            end
+
+            if pos then
+                unit.obj.setLock(false)
+                unit.obj.setPositionSmooth(pos)
+                unit.inReserve = false
+                Narrator.action(unit.name, "arrives from reserve",
+                    string.format("deploying at (%.1f, %.1f)", pos.x, pos.z))
+                table.remove(reservePool, i)
+                table.insert(arrivals, unit)
+            else
+                Narrator.warn(string.format("%s has no valid arrival position this round.", unit.name))
+            end
+        end
+    end
+
+    return arrivals
+end
+
+function ReserveManager.getReservePool()
+    return reservePool
+end
+
+function ReserveManager.addToReserve(unit)
+    unit.inReserve = true
+    if unit.obj and unit.obj.isValid() then
+        unit.obj.setPosition({x=50, y=5, z=50})
+        unit.obj.setLock(true)
+    end
+    table.insert(reservePool, unit)
+end

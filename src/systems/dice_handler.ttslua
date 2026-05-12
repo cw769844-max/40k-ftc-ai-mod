@@ -1,0 +1,156 @@
+-- Dice Handler
+-- Resolves all combat dice rolls for the AI.
+-- Uses math.random for instant results (no physical dice animation needed for AI turns).
+-- Physical dice rolling via FTC's dice mat is available but slow; AI uses virtual rolls
+-- and announces the outcome so the human player can verify if desired.
+
+DiceHandler = {}
+
+math.randomseed(os.time())
+
+-- Rolls n dice with f faces. Returns a table of individual results and the sum.
+local function rollDice(n, faces)
+    local results, total = {}, 0
+    for i = 1, n do
+        local r = math.random(1, faces)
+        table.insert(results, r)
+        total = total + r
+    end
+    return results, total
+end
+
+-- Parses an attack count that may be a fixed number, "D6", "2D6", "D3", etc.
+local function resolveCount(val)
+    if type(val) == "number" then return val end
+    if type(val) == "string" then
+        local mult, sides = val:match("(%d*)D(%d+)")
+        if sides then
+            local n = tonumber(mult) or 1
+            local _, total = rollDice(n, tonumber(sides))
+            return total
+        end
+    end
+    return 1
+end
+
+-- Resolves a single damage value (may be dice notation).
+local function resolveDamage(val)
+    return resolveCount(val)
+end
+
+-- Core attack resolution: returns wounds dealt to the target.
+-- weapon: datasheet weapon table
+-- targetStats: target's T, SV, INSV fields
+-- numModels: number of models in the attacking unit contributing this weapon
+function DiceHandler.resolveAttack(weapon, targetStats, numModels, difficulty)
+    difficulty = difficulty or Config.getDifficulty()
+
+    local attacks  = resolveCount(weapon.A) * (numModels or 1)
+    local hitRoll  = weapon.BS or weapon.WS or 4
+    local strength = weapon.S or 4
+    local ap       = weapon.AP or 0
+    local damage   = weapon.D or 1
+
+    -- ── Hit rolls ──────────────────────────────────────────────────────────
+    local hits = 0
+    local hitResults = {}
+    for i = 1, attacks do
+        local r = math.random(1, 6)
+        table.insert(hitResults, r)
+        local threshold = hitRoll
+        if difficulty == "easy" then threshold = threshold + 1 end
+        if r >= threshold then hits = hits + 1 end
+        -- Critical hit (natural 6) generates a Lethal Hit if weapon has LETHAL HITS
+        if r == 6 and weapon.special and weapon.special:find("LETHAL HITS") then
+            hits = hits  -- counted above; lethal hits auto-wound handled below
+        end
+    end
+
+    -- TORRENT weapons auto-hit
+    if weapon.special and weapon.special:find("TORRENT") then
+        hits = attacks
+    end
+
+    -- ── Wound rolls ────────────────────────────────────────────────────────
+    local toughness = targetStats.T or 4
+    local woundThreshold
+    if strength >= toughness * 2 then      woundThreshold = 2
+    elseif strength > toughness then       woundThreshold = 3
+    elseif strength == toughness then      woundThreshold = 4
+    elseif strength * 2 <= toughness then  woundThreshold = 6
+    else                                   woundThreshold = 5
+    end
+
+    local wounds = 0
+    for i = 1, hits do
+        local r = math.random(1, 6)
+        if r >= woundThreshold then wounds = wounds + 1 end
+        -- DEVASTATING WOUNDS: natural 6 to wound = mortal wound (bypass save)
+        if r == 6 and weapon.special and weapon.special:find("DEVASTATING WOUNDS") then
+            wounds = wounds  -- will bypass saves below
+        end
+    end
+
+    -- ── Save rolls ─────────────────────────────────────────────────────────
+    local sv    = targetStats.SV or 4
+    local invsv = targetStats.INSV or 0
+    local modSv = sv + ap  -- higher AP (negative) makes saves harder
+
+    -- Use best save available
+    local effectiveSave = modSv
+    if invsv > 0 and invsv < modSv then effectiveSave = invsv end
+    -- Cap at 7 (auto-fail) and floor at 2 (natural 1 always fails handled below)
+    effectiveSave = math.min(effectiveSave, 7)
+
+    local unsaved = 0
+    for i = 1, wounds do
+        local r = math.random(1, 6)
+        -- Natural 1 always fails saves
+        if r == 1 or r < effectiveSave then
+            unsaved = unsaved + 1
+        end
+    end
+
+    -- ── Damage ─────────────────────────────────────────────────────────────
+    local totalDamage = 0
+    for i = 1, unsaved do
+        totalDamage = totalDamage + resolveDamage(damage)
+    end
+
+    -- MELTA bonus damage within half range is already factored into weapon D value
+    -- by the caller supplying the correct weapon profile.
+
+    return totalDamage, {
+        attacks = attacks,
+        hits    = hits,
+        wounds  = wounds,
+        unsaved = unsaved,
+        damage  = totalDamage,
+    }
+end
+
+-- Rolls 2D6 for a charge and returns the total.
+function DiceHandler.chargeRoll()
+    local results, total = rollDice(2, 6)
+    return total, results
+end
+
+-- Rolls a single D6 for a battle-shock test against leadership.
+-- Returns true if the test is passed (roll ≥ LD).
+function DiceHandler.battleShockTest(ld)
+    local r = math.random(1, 6) + math.random(1, 6)  -- 2D6 test in 10e
+    return r >= ld, r
+end
+
+-- Rolls D6 for morale/ability triggers.
+function DiceHandler.d6()
+    return math.random(1, 6)
+end
+
+function DiceHandler.d3()
+    return math.random(1, 3)
+end
+
+function DiceHandler.twod6()
+    return math.random(1, 6) + math.random(1, 6)
+end

@@ -1,0 +1,178 @@
+-- AI Main Controller
+-- Entry point for the 40K FTC AI Controller mod.
+-- This script lives on a TTS object (tile or card) placed alongside the FTC map.
+--
+-- Setup flow:
+--   1. onLoad() creates UI buttons: "Assign AI to Red", "Assign AI to Blue",
+--      difficulty selectors, and a "Start AI" button.
+--   2. Player clicks "Assign AI to Blue" (or Red), then "Start AI".
+--   3. ArmyManager.init() scans the table, detects armies spatially, and hands off to GameState.
+--   4. GameState polls FTC for phase changes and calls AIMain.dispatchPhase() each turn.
+--
+-- All modules are loaded in this order by the compiler (see compiler/compile.ps1):
+--   config → narrator → ftc_interface → board_state → game_state →
+--   datasheet_db → unit_tracker → army_manager →
+--   dice_handler → reserve_manager → objective_tracker → stratagem_manager →
+--   threat_assessment → decision_engine →
+--   command_phase → movement_phase → shooting_phase → charge_phase → fight_phase →
+--   ai_main  (this file, last)
+
+AIMain = {}
+
+local initialised = false
+
+-- ─────────────────────────────────────────────────────────────────────────────
+-- TTS LIFECYCLE
+-- ─────────────────────────────────────────────────────────────────────────────
+
+function onLoad(saved_data)
+    -- Restore settings if saved
+    if saved_data and saved_data ~= "" then
+        local ok, data = pcall(JSON.decode, saved_data)
+        if ok and data then
+            if data.difficulty then Config.setDifficulty(data.difficulty) end
+            if data.aiSide     then Config.setAISide(data.aiSide)         end
+        end
+    end
+    AIMain.buildUI()
+end
+
+function onSave()
+    return JSON.encode({
+        difficulty = Config.getDifficulty(),
+        aiSide     = Config.getAISide(),
+    })
+end
+
+-- ─────────────────────────────────────────────────────────────────────────────
+-- UI
+-- ─────────────────────────────────────────────────────────────────────────────
+
+function AIMain.buildUI()
+    self.clearButtons()
+
+    local btnDefs = {
+        -- Side assignment
+        { label="AI → Red",    click_function="onBtnRedSide",   pos={-1.2, 0.2, -1.2}, color={0.8,0.1,0.1} },
+        { label="AI → Blue",   click_function="onBtnBlueSide",  pos={ 1.2, 0.2, -1.2}, color={0.1,0.3,0.9} },
+        -- Difficulty
+        { label="Easy",        click_function="onBtnEasy",      pos={-1.2, 0.2,  0.0}, color={0.2,0.7,0.2} },
+        { label="Medium",      click_function="onBtnMedium",    pos={ 0.0, 0.2,  0.0}, color={0.7,0.7,0.1} },
+        { label="Hard",        click_function="onBtnHard",      pos={ 1.2, 0.2,  0.0}, color={0.8,0.2,0.2} },
+        -- Start / debug
+        { label="START AI",    click_function="onBtnStart",     pos={ 0.0, 0.2, -1.2}, color={0.1,0.7,0.3} },
+        { label="Debug",       click_function="onBtnDebug",     pos={ 0.0, 0.2,  1.2}, color={0.4,0.4,0.4} },
+        { label="Scan Units",  click_function="onBtnScan",      pos={ 1.2, 0.2,  1.2}, color={0.3,0.3,0.6} },
+    }
+
+    for _, btn in ipairs(btnDefs) do
+        self.createButton({
+            click_function = btn.click_function,
+            function_owner = "self",
+            label          = btn.label,
+            position       = btn.pos,
+            rotation       = {0, 0, 0},
+            width          = 700,
+            height         = 280,
+            font_size      = 160,
+            color          = btn.color,
+            font_color     = {1, 1, 1},
+        })
+    end
+end
+
+-- ─────────────────────────────────────────────────────────────────────────────
+-- BUTTON CALLBACKS
+-- ─────────────────────────────────────────────────────────────────────────────
+
+function onBtnRedSide()  Config.setAISide("red")  end
+function onBtnBlueSide() Config.setAISide("blue") end
+function onBtnEasy()     Config.setDifficulty("easy")   end
+function onBtnMedium()   Config.setDifficulty("medium") end
+function onBtnHard()     Config.setDifficulty("hard")   end
+function onBtnDebug()    Config.toggleDebug()            end
+
+function onBtnScan()
+    -- Re-scan units without starting the AI loop (for diagnostic purposes).
+    local side = Config.getAISide()
+    if not side then
+        Narrator.warn("Select a side (AI → Red or AI → Blue) before scanning.")
+        return
+    end
+    ArmyManager.init(side)
+    local names = DatasheetDB.allNames()
+    if Config.isDebug() then
+        Narrator.announce(string.format("Datasheet DB contains %d entries.", #names))
+    end
+end
+
+function onBtnStart()
+    local side = Config.getAISide()
+    if not side then
+        Narrator.warn("Select a side (AI → Red or AI → Blue) before starting.")
+        return
+    end
+    if initialised then
+        Narrator.warn("AI already running. Reload the mod to restart.")
+        return
+    end
+    Narrator.announce(string.format(
+        "40K FTC AI Controller starting — side: %s, difficulty: %s",
+        side, Config.getDifficulty()))
+    local ok = ArmyManager.init(side)
+    if not ok then
+        Narrator.warn("Army detection failed. Ensure YellowScribe army is placed on the correct side.")
+        return
+    end
+    StratagemManager.init(side)
+    initialised = true
+    -- GameState.init() is called inside ArmyManager.init(); polling starts there.
+end
+
+-- ─────────────────────────────────────────────────────────────────────────────
+-- PHASE DISPATCHER
+-- Called by GameState when a new phase is detected on the AI's turn.
+-- ─────────────────────────────────────────────────────────────────────────────
+
+function AIMain.dispatchPhase(phase)
+    if not initialised then return end
+    local side  = ArmyManager.getAISide()
+    local round = GameState.getRound()
+
+    local dispatch = {
+        command  = function() CommandPhase.execute(side, round)  end,
+        movement = function() MovementPhase.execute(side, round) end,
+        shooting = function() ShootingPhase.execute(side, round) end,
+        charge   = function() ChargePhase.execute(side, round)   end,
+        fight    = function() FightPhase.execute(side, round)    end,
+    }
+
+    local handler = dispatch[phase:lower()]
+    if handler then
+        -- Small delay so FTC's own phase UI updates before AI acts.
+        Wait.time(handler, 0.5)
+    else
+        if Config.isDebug() then
+            Narrator.warn("Unknown phase: " .. tostring(phase))
+        end
+    end
+end
+
+-- ─────────────────────────────────────────────────────────────────────────────
+-- UTILITY
+-- ─────────────────────────────────────────────────────────────────────────────
+
+-- Called when an object is picked up — useful for detecting when the human
+-- moves enemy units so we can refresh positions.
+function onObjectPickUp(player_color, picked_up_object)
+    if not initialised then return end
+    -- Lightweight: just flag that a refresh is needed at next phase start.
+end
+
+function onObjectDrop(player_color, dropped_object)
+    if not initialised then return end
+    -- Refresh positions whenever the human drops a model.
+    Wait.time(function()
+        ArmyManager.refreshPositions()
+    end, 0.3)
+end

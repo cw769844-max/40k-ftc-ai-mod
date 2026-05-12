@@ -1,0 +1,34 @@
+-- AI Controller Configuration
+-- Difficulty and settings. Adjust these before starting a game,
+-- or use the in-game UI buttons created by ai_main.
+
+Config = {}
+
+local settings = {
+    difficulty = "medium",   -- "easy" | "medium" | "hard"
+    aiSide     = nil,        -- "red" | "blue" — set at game start via button
+    debugMode  = false,      -- if true, prints extra diagnostics to TTS chat
+}
+
+function Config.getDifficulty()  return settings.difficulty  end
+function Config.getAISide()      return settings.aiSide       end
+function Config.isDebug()        return settings.debugMode    end
+
+function Config.setDifficulty(d)
+    if d == "easy" or d == "medium" or d == "hard" then
+        settings.difficulty = d
+        Narrator.announce("AI difficulty set to: " .. d)
+    end
+end
+
+function Config.setAISide(side)
+    if side == "red" or side == "blue" then
+        settings.aiSide = side
+        Narrator.announce("AI assigned to: " .. side .. " side")
+    end
+end
+
+function Config.toggleDebug()
+    settings.debugMode = not settings.debugMode
+    Narrator.announce("Debug mode: " .. (settings.debugMode and "ON" or "OFF"))
+end

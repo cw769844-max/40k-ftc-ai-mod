@@ -1,0 +1,70 @@
+-- Shooting Phase Handler
+-- Executes the AI's Shooting Phase:
+--   1. Each non-engaged, non-activated, non-advanced unit selects a target
+--   2. Resolves attack dice (virtual rolls via DiceHandler)
+--   3. Applies wounds to target, announces damage
+--   4. Marks unit as activated after shooting
+
+ShootingPhase = {}
+
+function ShootingPhase.execute(aiSide, round)
+    Narrator.phaseStart("Shooting", round)
+    ArmyManager.refreshPositions()
+
+    local aiUnits    = ArmyManager.getAIUnits()
+    local enemyUnits = ArmyManager.getEnemyUnits()
+
+    for _, unit in ipairs(aiUnits) do
+        -- Skip units that can't shoot
+        if unit.activated                     then goto continue end
+        if unit.inReserve                     then goto continue end
+        if unit.advanced                      then goto continue end   -- advanced units can't shoot
+        if BoardState.isEngaged(unit.guid)    then goto continue end   -- engaged units can't shoot
+
+        local target, weapon = DecisionEngine.bestShootingTarget(unit, enemyUnits)
+        if not target or not weapon then
+            Narrator.action(unit.name, "has no valid shooting target")
+            UnitTracker.markActivated(unit)
+            goto continue
+        end
+
+        local pos     = unit.obj.getPosition()
+        local tPos    = target.obj.getPosition()
+        local dist    = BoardState.distanceInches(pos, tPos)
+        local numMini = 1   -- simplified: treat each record as one model (extend for unit sizes)
+
+        -- Check MELTA: if weapon has MELTA and target is within half range, upgrade damage
+        local effectiveWeapon = weapon
+        if weapon.special and weapon.special:find("MELTA") then
+            local meltaBonus = tonumber(weapon.special:match("MELTA (%d+)")) or 2
+            if dist <= (weapon.R or 0) / 2 then
+                effectiveWeapon = {}
+                for k, v in pairs(weapon) do effectiveWeapon[k] = v end
+                local baseDmg = tonumber(effectiveWeapon.D) or 1
+                effectiveWeapon.D = baseDmg + meltaBonus
+            end
+        end
+
+        local damage, breakdown = DiceHandler.resolveAttack(effectiveWeapon, target.stats or {}, numMini)
+
+        Narrator.action(unit.name,
+            string.format("shoots %s with %s", target.name, effectiveWeapon.name),
+            string.format("%d attacks → %d hits → %d wounds → %d unsaved → %d damage",
+                breakdown.attacks, breakdown.hits, breakdown.wounds, breakdown.unsaved, breakdown.damage))
+
+        if damage > 0 then
+            UnitTracker.applyWounds(target, damage)
+        end
+
+        -- Evaluate Go to Ground for targeted enemy (reactive, handled via stratagem)
+        StratagemManager.evaluateAutoUse("shooting", {
+            infantryUnderHeavyFire = damage >= 3,
+            infantryUnitAvailable  = true,
+        }, aiSide)
+
+        UnitTracker.markActivated(unit)
+        ::continue::
+    end
+
+    Narrator.announce("Shooting Phase complete.")
+end

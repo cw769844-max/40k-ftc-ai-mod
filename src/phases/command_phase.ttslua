@@ -1,0 +1,54 @@
+-- Command Phase Handler
+-- Executes the AI's Command Phase:
+--   1. Score primary objectives (VP gain)
+--   2. Gain Command Points (FTC CP counter)
+--   3. Resolve Battle-shock tests for units that lost models last round
+--   4. Reset activation tokens on all AI units
+--   5. Evaluate any Command Phase stratagems
+
+CommandPhase = {}
+
+function CommandPhase.execute(aiSide, round)
+    Narrator.phaseStart("Command", round)
+    ArmyManager.refreshPositions()
+
+    local aiUnits = ArmyManager.getAIUnits()
+
+    -- ── 1. Score primary objectives ──────────────────────────────────────
+    ObjectiveTracker.scoreObjectives(aiSide)
+
+    -- ── 2. Gain CP ──────────────────────────────────────────────────────
+    -- In 10e each player gains CP each Command Phase (variable by mission).
+    -- Default gain is 1 CP per round; some missions give more.
+    local cpGain = 1
+    FTCInterface.gainCP(aiSide, cpGain)
+    StratagemManager.syncCP(aiSide)
+    Narrator.announce(string.format("Gained %d CP. Total CP: %d", cpGain, StratagemManager.getCP()))
+
+    -- ── 3. Battle-shock tests ─────────────────────────────────────────────
+    for _, unit in ipairs(aiUnits) do
+        if unit.battleShocked then
+            local passed, roll = DiceHandler.battleShockTest(unit.stats and unit.stats.LD or 7)
+            if passed then
+                unit.battleShocked = false
+                Narrator.action(unit.name, "passes Battle-shock test", string.format("rolled %d", roll))
+            else
+                Narrator.action(unit.name, "fails Battle-shock test",
+                    string.format("rolled %d vs LD %d — unit cannot use special abilities this round",
+                    roll, unit.stats and unit.stats.LD or 7))
+            end
+        end
+    end
+
+    -- ── 4. Reset activation tokens ───────────────────────────────────────
+    for _, unit in ipairs(aiUnits) do
+        UnitTracker.resetActivation(unit)
+    end
+    Narrator.announce("All AI activation tokens reset.")
+
+    -- ── 5. Deploy any reserves that should arrive via Rapid Ingress ──────
+    -- (Standard reserve deployment happens in the Movement Phase;
+    --  Rapid Ingress is used in opponent's movement phase, handled reactively.)
+
+    Narrator.announce("Command Phase complete.")
+end

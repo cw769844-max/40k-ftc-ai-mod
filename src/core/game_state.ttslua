@@ -1,0 +1,93 @@
+-- Game State Reader
+-- Polls FTC for phase/round changes and dispatches to AI phase handlers.
+-- Uses Wait.time polling since FTC has no event subscription system.
+
+GameState = {}
+
+local PHASES = {"command", "movement", "shooting", "charge", "fight"}
+local POLL_INTERVAL = 1.5  -- seconds between phase checks
+
+local state = {
+    currentPhase  = nil,
+    currentRound  = 0,
+    aiSide        = nil,   -- "red" or "blue", set by ArmyManager on load
+    aiTurnActive  = false,
+    phaseHandled  = false,
+    lastRound     = 0,
+}
+
+-- Called by ai_main after army detection completes.
+function GameState.init(aiSide)
+    state.aiSide       = aiSide
+    state.currentRound = FTCInterface.getGameRound()
+    state.lastRound    = state.currentRound
+    GameState.startPolling()
+end
+
+function GameState.getAISide()   return state.aiSide   end
+function GameState.getRound()    return state.currentRound end
+function GameState.getPhase()    return state.currentPhase end
+function GameState.isAITurn()    return state.aiTurnActive end
+
+-- Determine whose turn it is based on FTC's turn counter objects.
+-- FTC tracks per-player turns via redTurnCounter / blueTurnCounter.
+-- The side whose counter matches the current game round value is acting.
+local function detectAITurn()
+    local side = state.aiSide
+    if not side then return false end
+
+    local menu = getObjectFromGUID(Global.getVar("startMenu_GUID") or "")
+    if menu then
+        local firstPlayer = menu.getVar("firstPlayer")
+        local round       = state.currentRound
+        -- In 40K 10e: first player alternates each round (both players choose at start).
+        -- FTC stores who goes first; AI cross-references that with current round.
+        if firstPlayer == side then
+            return true
+        end
+        -- If no firstPlayer var available, fall back to always letting AI act
+        -- (the human will simply not need to take their turn through the AI).
+    end
+    return true  -- safe fallback: AI always runs its own phase logic
+end
+
+local function onPhaseChange(newPhase)
+    state.currentPhase = newPhase
+    state.phaseHandled = false
+    state.aiTurnActive = detectAITurn()
+
+    if state.aiTurnActive and newPhase then
+        Narrator.announce(string.format("Round %d — %s Phase", state.currentRound, newPhase:gsub("^%l", string.upper)))
+        -- Dispatch to phase handlers (defined in ai_main).
+        if AIMain and AIMain.dispatchPhase then
+            AIMain.dispatchPhase(newPhase)
+        end
+        state.phaseHandled = true
+    end
+end
+
+local function onRoundChange(newRound)
+    state.currentRound = newRound
+    state.lastRound    = newRound
+    Narrator.announce(string.format("=== Battle Round %d begins ===", newRound))
+    ReserveManager.onNewRound(newRound)
+end
+
+local function poll()
+    local phase = FTCInterface.getCurrentPhaseName()
+    local round = FTCInterface.getGameRound()
+
+    if round ~= state.lastRound then
+        onRoundChange(round)
+    end
+
+    if phase ~= state.currentPhase and not state.phaseHandled then
+        onPhaseChange(phase)
+    end
+
+    Wait.time(poll, POLL_INTERVAL)
+end
+
+function GameState.startPolling()
+    Wait.time(poll, POLL_INTERVAL)
+end

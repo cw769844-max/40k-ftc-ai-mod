@@ -1,0 +1,135 @@
+-- Fight Phase Handler
+-- Executes the AI's Fight Phase per 40K 10th edition rules:
+--
+--   Fight sequence:
+--     1. All units with FIGHTS FIRST fight before any other units
+--     2. Remaining eligible units fight in an alternating sequence with the opponent
+--        (AI fights, opponent fights, AI fights, etc. — simplified: AI fights all eligible)
+--     3. For each fighting unit:
+--        a. Pile-in move: move up to 3" toward the nearest enemy to get more models in range
+--        b. Select best melee target within 1" engagement range
+--        c. Resolve melee attack dice
+--        d. Apply wounds to target
+--        e. Consolidate: move up to 3" to contest an objective or tag another enemy
+--     4. Mark unit activated after fighting
+--
+-- Casualty removal: enemy models are removed from the back of their unit
+-- (furthest models from the AI unit fight first) to preserve coherency.
+
+FightPhase = {}
+
+local PILE_IN_RANGE       = 3.0   -- max pile-in move in inches
+local CONSOLIDATION_RANGE = 3.0   -- max consolidation move in inches
+local ENGAGEMENT_RANGE    = 1.0   -- units within 1" can fight
+
+-- Moves a unit up to maxInches toward a target position.
+local function moveToward(unit, targetPos, maxInches, label)
+    if not unit.obj or not unit.obj.isValid() then return end
+    local pos  = unit.obj.getPosition()
+    local dist = BoardState.distanceInches(pos, targetPos)
+    if dist < 0.1 then return end  -- already there
+
+    local move = math.min(dist, maxInches)
+    local ratio = move / dist
+    local dest  = {
+        x = pos.x + (targetPos.x - pos.x) * ratio,
+        y = pos.y,
+        z = pos.z + (targetPos.z - pos.z) * ratio,
+    }
+    unit.obj.setPositionSmooth(dest)
+    BoardState.updateUnit(unit.guid, dest, ArmyManager.getAISide())
+    if label then
+        Narrator.action(unit.name, label, string.format("%.1f\"", move))
+    end
+end
+
+-- Resolves one unit's fight: pile-in → attack → consolidate.
+local function fightWithUnit(unit, enemyUnits, aiSide)
+    local pos = unit.obj.getPosition()
+
+    -- ── Pile-in ────────────────────────────────────────────────────────
+    -- Move up to 3" toward the nearest enemy model to maximise models in range.
+    local nearest, nDist = BoardState.closestEnemy(pos, enemyUnits)
+    if nearest and nearest.obj and nDist > ENGAGEMENT_RANGE then
+        moveToward(unit, nearest.obj.getPosition(), PILE_IN_RANGE, "piles in")
+        pos = unit.obj.getPosition()   -- update after pile-in
+    end
+
+    -- ── Select fight target ────────────────────────────────────────────
+    local target, weapon = DecisionEngine.bestFightTarget(unit, enemyUnits)
+    if not target or not weapon then
+        Narrator.action(unit.name, "no enemies in engagement range — cannot fight")
+        return
+    end
+
+    -- ── Resolve melee attacks ──────────────────────────────────────────
+    local numMini = 1   -- one model per record (simplified; extend for unit sizes)
+    local damage, breakdown = DiceHandler.resolveAttack(weapon, target.stats or {}, numMini)
+
+    Narrator.action(unit.name,
+        string.format("fights %s with %s", target.name, weapon.name),
+        string.format("%d attacks → %d hits → %d wounds → %d unsaved → %d damage",
+            breakdown.attacks, breakdown.hits, breakdown.wounds, breakdown.unsaved, breakdown.damage))
+
+    -- ── Apply damage ───────────────────────────────────────────────────
+    if damage > 0 then
+        -- Remove casualties from the back of the unit (models furthest from the AI attacker).
+        -- In TTS we represent this by applying wounds to the target record and letting
+        -- the FTC wound counter track remaining health.
+        UnitTracker.applyWounds(target, damage)
+    end
+
+    -- ── Counter-Offensive stratagem window ────────────────────────────
+    StratagemManager.evaluateAutoUse("fight", {
+        enemyJustFought    = false,   -- this is AI fighting; CO fires when enemy fights
+        hasMeleeUnitInRange = false,
+    }, aiSide)
+
+    -- ── Consolidation ─────────────────────────────────────────────────
+    -- Move up to 3" after fighting: prefer stepping onto an objective,
+    -- or tagging an additional enemy unit to lock them in combat.
+    local consoleDest = DecisionEngine.bestConsolidation(unit, enemyUnits)
+    if consoleDest then
+        moveToward(unit, consoleDest, CONSOLIDATION_RANGE, "consolidates")
+    end
+end
+
+function FightPhase.execute(aiSide, round)
+    Narrator.phaseStart("Fight", round)
+    ArmyManager.refreshPositions()
+
+    local enemyUnits = ArmyManager.getEnemyUnits()
+
+    -- Build fight order: FIGHTS FIRST units go before all others.
+    local ordered = DecisionEngine.fightOrder(ArmyManager.getAIUnits())
+
+    if #ordered == 0 then
+        Narrator.announce("No AI units eligible to fight.")
+        Narrator.announce("Fight Phase complete.")
+        return
+    end
+
+    -- Fight each unit in sequence (pile-in → attack → consolidate).
+    for _, unit in ipairs(ordered) do
+        local pos  = unit.obj.getPosition()
+        local near = BoardState.closestEnemy(pos, enemyUnits)
+        local _, nDist = BoardState.closestEnemy(pos, enemyUnits)
+
+        -- A unit can only fight if it is within ENGAGEMENT_RANGE of an enemy,
+        -- or it charged this turn (it moved into engagement range already).
+        if nDist and nDist <= (ENGAGEMENT_RANGE + PILE_IN_RANGE) then
+            fightWithUnit(unit, enemyUnits, aiSide)
+        else
+            Narrator.action(unit.name, "not in engagement range — skipping")
+        end
+
+        UnitTracker.markActivated(unit)
+    end
+
+    -- Final position refresh after all fights and consolidations resolve.
+    Wait.time(function()
+        ArmyManager.refreshPositions()
+        BoardState.recalcEngagement(ArmyManager.getAIUnits(), ArmyManager.getEnemyUnits())
+        Narrator.announce("Fight Phase complete.")
+    end, 2.0)
+end

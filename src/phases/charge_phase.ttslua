@@ -1,0 +1,113 @@
+-- Charge Phase Handler
+-- Executes the AI's Charge Phase per 40K 10th edition rules:
+--
+--   For each eligible melee unit (not activated, not in reserve):
+--     1. Declare charge against the best target(s)
+--     2. Roll 2D6 charge distance
+--     3. If roll ≥ distance to target: move unit into base contact (1")
+--        If roll < distance: charge fails, unit stays put
+--     4. Evaluate Heroic Intervention and Overwatch stratagems for the enemy
+--     5. Mark unit activated after resolving charge
+--
+-- Units that Advanced this turn may not charge.
+-- A unit can declare a charge against multiple targets (charge roll must meet
+-- the shortest distance to any declared target).
+
+ChargePhase = {}
+
+-- Minimum distance the charging unit's base must end up from the target.
+local CHARGE_END_RANGE = 1.0   -- inches (base contact)
+
+-- Moves the charging unit to just within 1" of the target.
+local function moveToEngagement(charger, target)
+    if not charger.obj or not target.obj then return end
+    local cPos = charger.obj.getPosition()
+    local tPos = target.obj.getPosition()
+    local dist = BoardState.distanceInches(cPos, tPos)
+    if dist <= CHARGE_END_RANGE then return end  -- already in range
+
+    -- Place the charger 1" away from the target along the line between them.
+    local ratio = (dist - CHARGE_END_RANGE) / dist
+    local dest = {
+        x = cPos.x + (tPos.x - cPos.x) * (1 - ratio),
+        y = cPos.y,
+        z = cPos.z + (tPos.z - cPos.z) * (1 - ratio),
+    }
+    charger.obj.setPositionSmooth(dest)
+    BoardState.updateUnit(charger.guid, dest, ArmyManager.getAISide())
+end
+
+function ChargePhase.execute(aiSide, round)
+    Narrator.phaseStart("Charge", round)
+    ArmyManager.refreshPositions()
+
+    local aiUnits    = ArmyManager.getAIUnits()
+    local enemyUnits = ArmyManager.getEnemyUnits()
+
+    for _, unit in ipairs(aiUnits) do
+        -- Eligibility checks
+        if unit.activated                  then goto continue end
+        if unit.inReserve                  then goto continue end
+        if unit.advanced                   then goto continue end   -- cannot charge after Advancing
+        if not UnitTracker.isMeleeUnit(unit) then goto continue end -- skip non-melee units
+
+        local pos    = unit.obj.getPosition()
+        local target = DecisionEngine.bestChargeTarget(unit, enemyUnits)
+
+        if not target or not target.obj then
+            Narrator.action(unit.name, "does not charge", "no viable target in range")
+            UnitTracker.markActivated(unit)
+            goto continue
+        end
+
+        local tPos = target.obj.getPosition()
+        local dist = BoardState.distanceInches(pos, tPos)
+
+        -- Declare the charge
+        Narrator.action(unit.name,
+            string.format("declares charge against %s", target.name),
+            string.format("%.1f\" away", dist))
+
+        -- Evaluate Overwatch stratagem for the defender
+        StratagemManager.evaluateAutoUse("charge", {
+            enemyCharged           = true,
+            chargerThreatensKeyUnit = (target.stats and target.stats.W and target.stats.W >= 4),
+            unitWithin6            = false,  -- Heroic Intervention handled separately
+        }, aiSide)
+
+        -- Roll 2D6 charge distance
+        local roll, results = DiceHandler.chargeRoll()
+        Narrator.rollResult(
+            string.format("%s charge roll", unit.name),
+            string.format("2D6 (%d+%d)", results[1], results[2]),
+            roll
+        )
+
+        if roll >= math.ceil(dist) then
+            -- Charge succeeds
+            moveToEngagement(unit, target)
+            Narrator.action(unit.name, "CHARGE SUCCESSFUL",
+                string.format("rolled %d, needed %d — now engaged with %s", roll, math.ceil(dist), target.name))
+
+            -- Evaluate Heroic Intervention for nearby enemy units
+            StratagemManager.evaluateAutoUse("charge", {
+                enemyCharged   = true,
+                unitWithin6    = true,
+                chargerThreatensKeyUnit = false,
+            }, aiSide)
+        else
+            -- Charge fails; unit stays where it is
+            Narrator.action(unit.name, "CHARGE FAILED",
+                string.format("rolled %d, needed %d — unit halts", roll, math.ceil(dist)))
+        end
+
+        UnitTracker.markActivated(unit)
+        ::continue::
+    end
+
+    -- Refresh engagement flags after all charges resolve
+    Wait.time(function()
+        ArmyManager.refreshPositions()
+        Narrator.announce("Charge Phase complete.")
+    end, 1.5)
+end

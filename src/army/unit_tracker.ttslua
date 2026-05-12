@@ -1,0 +1,132 @@
+-- Unit Tracker
+-- Creates and maintains per-unit state records.
+-- Each record wraps a TTS object with game-relevant metadata resolved from the datasheet DB.
+
+UnitTracker = {}
+
+-- Creates a unit record for the given TTS object.
+-- Matches the object name to a datasheet entry to populate stats.
+function UnitTracker.createRecord(obj, side)
+    if not obj or not obj.isValid() then return nil end
+
+    local name  = obj.getName() or ""
+    local guid  = obj.getGUID()
+    local stats = DatasheetDB.lookup(name)
+
+    -- Object has no matching name and no wounds counter — likely a token or terrain piece.
+    if not stats and not obj.getVar("wounds") then
+        return nil
+    end
+
+    local wounds = obj.getVar("wounds") or (stats and stats.W or 1)
+
+    return {
+        guid        = guid,
+        obj         = obj,
+        name        = name,
+        side        = side,
+        stats       = stats or UnitTracker.defaultStats(),
+        currentW    = wounds,
+        activated   = FTCInterface.isUnitActivated(obj),
+        inReserve   = false,
+        battleShocked = false,
+    }
+end
+
+function UnitTracker.defaultStats()
+    return { M=6, T=4, W=1, SV=4, INSV=6, LD=7, OC=1,
+             weapons = {},
+             keywords = {},
+             abilities = {} }
+end
+
+-- Syncs the record's wound count and activation state from the live TTS object.
+function UnitTracker.refresh(record)
+    if not record or not record.obj or not record.obj.isValid() then return end
+    record.currentW  = FTCInterface.getUnitWounds(record.obj)
+    record.activated = FTCInterface.isUnitActivated(record.obj)
+end
+
+-- Returns true if the unit has been destroyed (wounds ≤ 0 or object gone).
+function UnitTracker.isDestroyed(record)
+    if not record.obj or not record.obj.isValid() then return true end
+    return record.currentW <= 0
+end
+
+-- Applies damage to a record and its live TTS object.
+function UnitTracker.applyWounds(record, damage)
+    record.currentW = math.max(0, record.currentW - damage)
+    FTCInterface.modifyUnitWounds(record.obj, -damage)
+    if UnitTracker.isDestroyed(record) then
+        Narrator.announce(string.format("[AI] %s has been destroyed!", record.name))
+        ArmyManager.removeUnit(record.guid)
+    end
+end
+
+-- Marks unit as having acted this phase and updates the FTC activation token.
+function UnitTracker.markActivated(record)
+    record.activated = true
+    FTCInterface.setUnitActivated(record.obj)
+end
+
+-- Resets activation at the start of a new round.
+function UnitTracker.resetActivation(record)
+    record.activated   = false
+    record.battleShocked = false
+    FTCInterface.resetUnitActivation(record.obj)
+end
+
+-- Returns true if unit can still act this phase.
+function UnitTracker.canAct(record)
+    return not record.activated and not record.inReserve and not UnitTracker.isDestroyed(record)
+end
+
+-- Returns the unit's best ranged weapon (highest expected damage per attack).
+function UnitTracker.bestRangedWeapon(record)
+    local best, bestScore = nil, -1
+    for _, w in ipairs(record.stats.weapons or {}) do
+        if w.type == "ranged" then
+            local score = (w.A or 1) * (w.D or 1) * (1 / math.max(w.AP or 0 + 1, 1))
+            if score > bestScore then bestScore = score; best = w end
+        end
+    end
+    return best
+end
+
+-- Returns the unit's best melee weapon.
+function UnitTracker.bestMeleeWeapon(record)
+    local best, bestScore = nil, -1
+    for _, w in ipairs(record.stats.weapons or {}) do
+        if w.type == "melee" then
+            local score = (w.A or 1) * (w.D or 1) * (1 / math.max(w.AP or 0 + 1, 1))
+            if score > bestScore then bestScore = score; best = w end
+        end
+    end
+    return best
+end
+
+-- Returns true if this unit is melee-optimised (best weapon is melee or has MELEE keyword).
+function UnitTracker.isMeleeUnit(record)
+    local hasKeyword = false
+    for _, kw in ipairs(record.stats.keywords or {}) do
+        if kw:upper() == "MELEE" then hasKeyword = true; break end
+    end
+    local meleeW  = UnitTracker.bestMeleeWeapon(record)
+    local rangedW = UnitTracker.bestRangedWeapon(record)
+    if hasKeyword then return true end
+    if meleeW and not rangedW then return true end
+    if meleeW and rangedW then
+        local ms = (meleeW.A or 1) * (meleeW.D or 1)
+        local rs = (rangedW.A or 1) * (rangedW.D or 1)
+        return ms > rs
+    end
+    return false
+end
+
+-- Returns true if this unit has the FIGHTS FIRST ability.
+function UnitTracker.hasFightsFirst(record)
+    for _, ab in ipairs(record.stats.abilities or {}) do
+        if ab:upper():find("FIGHTS FIRST") then return true end
+    end
+    return false
+end

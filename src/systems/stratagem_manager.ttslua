@@ -1,0 +1,139 @@
+-- Stratagem Manager
+-- Tracks available CP and a library of universal 10th edition stratagems.
+-- Faction-specific stratagems can be added by extending the stratagem table.
+-- The AI evaluates whether a stratagem is worth using based on game context.
+
+StratagemManager = {}
+
+-- Universal 10th edition stratagems (CP costs and conditions).
+local STRATAGEMS = {
+    {
+        name     = "Command Re-roll",
+        cp       = 1,
+        timing   = "any",
+        desc     = "Re-roll one dice roll.",
+        autoUse  = false,   -- too situational; handled per-roll
+    },
+    {
+        name     = "Counter-Offensive",
+        cp       = 2,
+        timing   = "fight",
+        desc     = "After an enemy unit fights, select one of your eligible units and it fights next.",
+        autoUse  = true,
+        condition = function(ctx)
+            -- Use if an enemy unit just fought and we have a melee unit in range
+            return ctx.enemyJustFought and ctx.hasMeleeUnitInRange
+        end,
+    },
+    {
+        name     = "Heroic Intervention",
+        cp       = 1,
+        timing   = "charge",
+        desc     = "After an enemy unit ends a Charge move, one of your units within 6\" can move up to 3\".",
+        autoUse  = true,
+        condition = function(ctx)
+            return ctx.enemyCharged and ctx.unitWithin6
+        end,
+    },
+    {
+        name     = "Grenade",
+        cp       = 1,
+        timing   = "shooting",
+        desc     = "One INFANTRY unit can throw a grenade (S4 AP0 D1 Blast) at an enemy unit within 8\".",
+        autoUse  = true,
+        condition = function(ctx)
+            return ctx.infantryUnitAvailable and ctx.targetWithin8
+        end,
+    },
+    {
+        name     = "Rapid Ingress",
+        cp       = 1,
+        timing   = "movement",
+        desc     = "At the end of your opponent's Movement phase, one unit in Strategic Reserve can arrive.",
+        autoUse  = false,  -- handled by ReserveManager
+    },
+    {
+        name     = "Overwatch",
+        cp       = 1,
+        timing   = "charge",
+        desc     = "When an enemy unit declares a charge, one of your units can shoot at that unit.",
+        autoUse  = true,
+        condition = function(ctx)
+            -- Use if the charging unit threatens a key AI unit
+            return ctx.chargerThreatensKeyUnit
+        end,
+    },
+    {
+        name     = "Tank Shock",
+        cp       = 1,
+        timing   = "movement",
+        desc     = "After a VEHICLE makes a Normal move, you can select one enemy unit it moved over or through.",
+        autoUse  = false,
+    },
+    {
+        name     = "Go to Ground",
+        cp       = 1,
+        timing   = "shooting",
+        desc     = "One INFANTRY unit that was targeted gains the BENEFIT OF COVER until your next turn.",
+        autoUse  = true,
+        condition = function(ctx)
+            -- Use if a weak infantry unit is being targeted by heavy fire
+            return ctx.infantryUnderHeavyFire
+        end,
+    },
+}
+
+local cpTracker = 0
+
+function StratagemManager.init(aiSide)
+    cpTracker = FTCInterface.getCP(aiSide)
+end
+
+function StratagemManager.getCP()
+    return cpTracker
+end
+
+function StratagemManager.syncCP(aiSide)
+    cpTracker = FTCInterface.getCP(aiSide)
+end
+
+-- Attempts to use a named stratagem. Returns true if CP was spent.
+function StratagemManager.use(name, aiSide)
+    for _, s in ipairs(STRATAGEMS) do
+        if s.name == name then
+            if cpTracker >= s.cp then
+                local ok = FTCInterface.spendCP(aiSide, s.cp)
+                if ok then
+                    cpTracker = cpTracker - s.cp
+                    Narrator.announce(string.format("Stratagem: %s (-%d CP). %s", s.name, s.cp, s.desc))
+                    return true
+                end
+            else
+                Narrator.warn(string.format("Not enough CP for %s (need %d, have %d).",
+                    s.name, s.cp, cpTracker))
+            end
+            return false
+        end
+    end
+    return false
+end
+
+-- Evaluates which auto-use stratagems are applicable given a context table.
+-- ctx fields vary by timing window (see individual conditions above).
+function StratagemManager.evaluateAutoUse(timing, ctx, aiSide)
+    for _, s in ipairs(STRATAGEMS) do
+        if s.autoUse and s.timing == timing and s.condition then
+            if s.condition(ctx) and cpTracker >= s.cp then
+                StratagemManager.use(s.name, aiSide)
+            end
+        end
+    end
+end
+
+-- Returns true if the AI can afford at least one stratagem.
+function StratagemManager.canAffordAny()
+    for _, s in ipairs(STRATAGEMS) do
+        if cpTracker >= s.cp then return true end
+    end
+    return false
+end

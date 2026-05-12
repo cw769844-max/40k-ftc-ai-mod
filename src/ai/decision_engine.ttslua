@@ -1,0 +1,232 @@
+-- Decision Engine
+-- Heuristic scoring engine for all AI decisions.
+-- Each phase calls into this module to select the best action for each unit.
+
+DecisionEngine = {}
+
+local DIFFICULTY_MODIFIERS = {
+    easy   = { targetPriority = 0.5, advanceChance = 0.4, chargeChance = 0.5 },
+    medium = { targetPriority = 0.8, advanceChance = 0.6, chargeChance = 0.7 },
+    hard   = { targetPriority = 1.0, advanceChance = 0.8, chargeChance = 0.85 },
+}
+
+local function mod()
+    return DIFFICULTY_MODIFIERS[Config.getDifficulty()] or DIFFICULTY_MODIFIERS.medium
+end
+
+-- ─────────────────────────────────────────────────────────────────
+-- MOVEMENT DECISIONS
+-- ─────────────────────────────────────────────────────────────────
+
+-- Returns the best destination position for a unit during the Movement phase.
+-- Balances: moving onto objectives, advancing toward enemies, staying in cover.
+function DecisionEngine.bestMoveTarget(unit, enemyUnits)
+    local pos   = unit.obj.getPosition()
+    local stats = unit.stats or {}
+    local moveIn = stats.M or 6
+    local isMelee = UnitTracker.isMeleeUnit(unit)
+
+    -- Score each objective as a movement destination
+    local objPriority = ObjectiveTracker.prioritised(ArmyManager.getAISide())
+    local best, bestScore = nil, -math.huge
+
+    for _, entry in ipairs(objPriority) do
+        local objPos = entry.objective.pos
+        local dist   = BoardState.distanceInches(pos, objPos)
+
+        -- Can we reach this objective?
+        local reachable = dist <= moveIn
+        -- Would advancing (move + D6") let us reach it?
+        local advanceReach = dist <= (moveIn + 6)
+
+        if reachable or advanceReach then
+            local score = entry.score
+
+            -- Melee units want to get close to enemies
+            if isMelee then
+                local closest, eDist = BoardState.closestEnemy(objPos, enemyUnits)
+                if eDist < 8 then score = score * 1.5 end
+            end
+
+            -- Penalty for moving into engagement range when we're a ranged unit
+            if not isMelee then
+                local _, eDist = BoardState.closestEnemy(objPos, enemyUnits)
+                if eDist and eDist < 2 then score = score * 0.2 end
+            end
+
+            if score > bestScore then
+                bestScore = score
+                best = {
+                    pos     = objPos,
+                    advance = not reachable and advanceReach,
+                    dist    = dist,
+                }
+            end
+        end
+    end
+
+    -- If no objective is reachable, move toward the highest-threat enemy (melee)
+    -- or hold position (ranged with no better option).
+    if not best then
+        if isMelee then
+            local closest, eDist = BoardState.closestEnemy(pos, enemyUnits)
+            if closest and closest.obj then
+                best = { pos = closest.obj.getPosition(), advance = false, dist = eDist }
+            end
+        end
+    end
+
+    return best
+end
+
+-- Decides if advancing is worthwhile (add D6" to movement, but cannot shoot afterwards).
+function DecisionEngine.shouldAdvance(unit, destination)
+    if not destination then return false end
+    local isMelee = UnitTracker.isMeleeUnit(unit)
+    -- Melee units advance aggressively; ranged units only advance if they have no targets
+    if isMelee then
+        return destination.advance and math.random() < mod().advanceChance
+    end
+    return destination.advance and math.random() < 0.25
+end
+
+-- ─────────────────────────────────────────────────────────────────
+-- SHOOTING DECISIONS
+-- ─────────────────────────────────────────────────────────────────
+
+-- Returns the best shooting target and weapon for a given unit.
+function DecisionEngine.bestShootingTarget(unit, enemyUnits)
+    local weapon  = UnitTracker.bestRangedWeapon(unit)
+    if not weapon then return nil, nil end
+
+    local pos = unit.obj.getPosition()
+    local prioritised = ThreatAssessment.sortedByShootingPriority(enemyUnits, pos)
+
+    for _, entry in ipairs(prioritised) do
+        local target = entry.unit
+        local tPos   = target.obj.getPosition()
+        local dist   = BoardState.distanceInches(pos, tPos)
+
+        -- Range check
+        if weapon.R and dist > weapon.R then goto continue end
+
+        -- Cannot shoot into or out of engagement range with another unit
+        if BoardState.isEngaged(unit.guid) then goto continue end
+
+        -- Difficulty modifier: easier = AI may skip best target
+        if math.random() > mod().targetPriority then goto continue end
+
+        return target, weapon
+        ::continue::
+    end
+    return nil, nil
+end
+
+-- ─────────────────────────────────────────────────────────────────
+-- CHARGE DECISIONS
+-- ─────────────────────────────────────────────────────────────────
+
+-- Returns the best charge target for a unit, or nil if charging isn't advisable.
+function DecisionEngine.bestChargeTarget(unit, enemyUnits)
+    if not UnitTracker.isMeleeUnit(unit) then return nil end
+
+    local pos      = unit.obj.getPosition()
+    local priority = ThreatAssessment.sortedByChargePriority(enemyUnits, pos, unit.stats)
+
+    for _, entry in ipairs(priority) do
+        local target = entry.unit
+        local tPos   = target.obj.getPosition()
+        local dist   = BoardState.distanceInches(pos, tPos)
+
+        -- Only charge if we have a meaningful probability (dist ≤ 7" = 58%+ on 2D6)
+        local chargeProb = dist <= 7 and mod().chargeChance or (mod().chargeChance * 0.4)
+        if math.random() < chargeProb then
+            return target
+        end
+    end
+    return nil
+end
+
+-- ─────────────────────────────────────────────────────────────────
+-- FIGHT DECISIONS
+-- ─────────────────────────────────────────────────────────────────
+
+-- Returns the best melee target within engagement range.
+function DecisionEngine.bestFightTarget(unit, enemyUnits)
+    local weapon = UnitTracker.bestMeleeWeapon(unit)
+    if not weapon then return nil, nil end
+
+    local pos    = unit.obj.getPosition()
+    local best, bestScore = nil, -math.huge
+
+    for _, enemy in ipairs(enemyUnits or {}) do
+        if enemy.obj and enemy.obj.isValid() then
+            local dist = BoardState.distanceInches(pos, enemy.obj.getPosition())
+            if dist <= 1.0 then   -- within 1" engagement range
+                local score = ThreatAssessment.shootingPriority(enemy, pos)
+                if score > bestScore then
+                    bestScore = score
+                    best = enemy
+                end
+            end
+        end
+    end
+    return best, weapon
+end
+
+-- Returns units sorted so FIGHTS FIRST units go before others.
+function DecisionEngine.fightOrder(aiUnits)
+    local first, normal = {}, {}
+    for _, u in ipairs(aiUnits or {}) do
+        if UnitTracker.canAct(u) and not u.inReserve then
+            if UnitTracker.hasFightsFirst(u) then
+                table.insert(first, u)
+            else
+                table.insert(normal, u)
+            end
+        end
+    end
+    -- Concatenate: fights-first units go at the front
+    local ordered = {}
+    for _, u in ipairs(first)  do table.insert(ordered, u) end
+    for _, u in ipairs(normal) do table.insert(ordered, u) end
+    return ordered
+end
+
+-- ─────────────────────────────────────────────────────────────────
+-- CONSOLIDATION DECISIONS
+-- ─────────────────────────────────────────────────────────────────
+
+-- Returns the best consolidation destination (up to 3" move after fighting).
+-- Prioritises moving onto objectives or tagging additional enemies.
+function DecisionEngine.bestConsolidation(unit, enemyUnits)
+    local pos  = unit.obj.getPosition()
+    local best = nil
+    local bestScore = -math.huge
+
+    -- Check nearby objectives
+    for _, entry in ipairs(ObjectiveTracker.prioritised(ArmyManager.getAISide())) do
+        local oPos = entry.objective.pos
+        local dist = BoardState.distanceInches(pos, oPos)
+        if dist <= 3 then
+            local score = entry.score + 5  -- bonus for stepping onto objective
+            if score > bestScore then bestScore = score; best = oPos end
+        end
+    end
+
+    -- Check nearby enemies to tag (keep them locked in combat)
+    for _, enemy in ipairs(enemyUnits or {}) do
+        if enemy.obj and enemy.obj.isValid() then
+            local eDist = BoardState.distanceInches(pos, enemy.obj.getPosition())
+            if eDist > 1 and eDist <= 3 then
+                local score = 8  -- tagging enemy is valuable
+                if score > bestScore then
+                    bestScore = score
+                    best = enemy.obj.getPosition()
+                end
+            end
+        end
+    end
+
+    return best
+end
